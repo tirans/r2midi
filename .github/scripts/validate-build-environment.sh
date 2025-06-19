@@ -268,15 +268,16 @@ if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
     
     case "$PLATFORM" in
         macos)
-            local required_secrets=(
-                "APPLE_CERTIFICATE_P12"
-                "APPLE_CERTIFICATE_PASSWORD"
+            required_secrets=(
+                "APPLE_DEVELOPER_ID_APPLICATION_CERT"
+                "APPLE_DEVELOPER_ID_INSTALLER_CERT"
+                "APPLE_CERT_PASSWORD"
                 "APPLE_ID"
                 "APPLE_ID_PASSWORD"
                 "APPLE_TEAM_ID"
             )
             
-            local missing_secrets=()
+            missing_secrets=()
             for secret in "${required_secrets[@]}"; do
                 if [ -z "${!secret:-}" ]; then
                     missing_secrets+=("$secret")
