@@ -204,42 +204,83 @@ jobs:
         run: |
           mkdir -p build_artifacts
           echo "${{ matrix.emoji }} Packaging ${{ matrix.platform }} builds..."
-
+          
+          # Debug: Show what directories exist
+          echo "🔍 Checking build directories..."
+          find build/ -type d -name "*windows*" -o -name "*linux*" 2>/dev/null || echo "No platform-specific build dirs found"
+          
           if [ "${{ matrix.platform }}" = "linux" ]; then
             # Copy .deb packages
             find dist/ -name "*.deb" -exec cp {} build_artifacts/ \; 2>/dev/null || true
             
             # Create tar.gz files as fallback
             if [ -d "build/server/linux/system" ]; then
+              echo "📦 Creating Server tar.gz..."
               tar -czf "build_artifacts/R2MIDI-Server-linux-v${APP_VERSION}.tar.gz" -C build/server/linux/system .
             fi
             if [ -d "build/r2midi-client/linux/system" ]; then
+              echo "📦 Creating Client tar.gz..."
               tar -czf "build_artifacts/R2MIDI-Client-linux-v${APP_VERSION}.tar.gz" -C build/r2midi-client/linux/system .
             fi
           else
-            # Windows - create archives using PowerShell or fallback
+            # Windows - create archives with improved error handling
+            echo "🔍 Looking for Windows app directories..."
+            
+            # Package Server
             if [ -d "build/server/windows/app" ]; then
+              echo "📦 Packaging R2MIDI Server..."
+              cd build/server/windows/app
+              
+              # Try PowerShell first (Windows native)
               if command -v powershell >/dev/null 2>&1; then
-                powershell -Command "Compress-Archive -Path 'build/server/windows/app/*' -DestinationPath 'build_artifacts/R2MIDI-Server-windows-v${APP_VERSION}.zip'"
+                echo "Using PowerShell Compress-Archive..."
+                powershell -NoProfile -ExecutionPolicy Bypass -Command \
+                  "Compress-Archive -Path '.\*' -DestinationPath '${GITHUB_WORKSPACE}\build_artifacts\R2MIDI-Server-windows-v${APP_VERSION}.zip' -Force"
               elif command -v zip >/dev/null 2>&1; then
-                cd build/server/windows/app && zip -r "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Server-windows-v${APP_VERSION}.zip" * && cd "$GITHUB_WORKSPACE"
+                echo "Using zip command..."
+                zip -r "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Server-windows-v${APP_VERSION}.zip" *
               else
-                cd build/server/windows/app && tar -czf "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Server-windows-v${APP_VERSION}.tar.gz" * && cd "$GITHUB_WORKSPACE"
+                echo "Using tar as fallback..."
+                tar -czf "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Server-windows-v${APP_VERSION}.tar.gz" *
               fi
+              
+              cd "$GITHUB_WORKSPACE"
+              echo "✅ Server packaging complete"
+            else
+              echo "⚠️ Server app directory not found"
             fi
+            
+            # Package Client
             if [ -d "build/r2midi-client/windows/app" ]; then
+              echo "📦 Packaging R2MIDI Client..."
+              cd build/r2midi-client/windows/app
+              
+              # Try PowerShell first (Windows native)
               if command -v powershell >/dev/null 2>&1; then
-                powershell -Command "Compress-Archive -Path 'build/r2midi-client/windows/app/*' -DestinationPath 'build_artifacts/R2MIDI-Client-windows-v${APP_VERSION}.zip'"
+                echo "Using PowerShell Compress-Archive..."
+                powershell -NoProfile -ExecutionPolicy Bypass -Command \
+                  "Compress-Archive -Path '.\*' -DestinationPath '${GITHUB_WORKSPACE}\build_artifacts\R2MIDI-Client-windows-v${APP_VERSION}.zip' -Force"
               elif command -v zip >/dev/null 2>&1; then
-                cd build/r2midi-client/windows/app && zip -r "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Client-windows-v${APP_VERSION}.zip" * && cd "$GITHUB_WORKSPACE"
+                echo "Using zip command..."
+                zip -r "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Client-windows-v${APP_VERSION}.zip" *
               else
-                cd build/r2midi-client/windows/app && tar -czf "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Client-windows-v${APP_VERSION}.tar.gz" * && cd "$GITHUB_WORKSPACE"
+                echo "Using tar as fallback..."
+                tar -czf "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Client-windows-v${APP_VERSION}.tar.gz" *
               fi
+              
+              cd "$GITHUB_WORKSPACE"
+              echo "✅ Client packaging complete"
+            else
+              echo "⚠️ Client app directory not found"
             fi
           fi
 
           echo "${{ matrix.emoji }} Build artifacts:"
-          ls -la build_artifacts/
+          ls -la build_artifacts/ || echo "No artifacts directory created"
+          
+          # Debug: Show total directory structure if small
+          echo "🔍 Final directory structure:"
+          find . -name "build_artifacts" -exec ls -la {} \; 2>/dev/null || true
         shell: bash
 
       - name: Upload build artifacts

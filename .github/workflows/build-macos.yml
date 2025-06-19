@@ -110,13 +110,38 @@ jobs:
           ./.github/scripts/build-briefcase-apps.sh macos signed
 
       - name: Create signed and notarized PKG installers
+        id: pkg_creation
         shell: bash
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          ./.github/scripts/create-macos-pkg.sh \
+          # Try PKG creation first
+          if ./.github/scripts/create-macos-pkg.sh \
+            "${{ steps.version.outputs.version }}" \
+            "${{ inputs.build-type }}" \
+            "${{ secrets.APPLE_ID }}" \
+            "${{ secrets.APPLE_ID_PASSWORD }}" \
+            "${{ secrets.APPLE_TEAM_ID }}"; then
+            echo "pkg_success=true" >> $GITHUB_OUTPUT
+            echo "✅ PKG creation successful"
+          else
+            echo "pkg_success=false" >> $GITHUB_OUTPUT
+            echo "⚠️ PKG creation failed, will try DMG fallback"
+          fi
+        continue-on-error: true
+
+      - name: Fallback to DMG creation
+        if: steps.pkg_creation.outputs.pkg_success != 'true'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          echo "💿 PKG creation failed, creating DMG files as fallback..."
+          ./.github/scripts/create-macos-dmg-fallback.sh \
             "${{ steps.version.outputs.version }}" \
             "${{ inputs.build-type }}" \
             "${{ secrets.APPLE_ID }}" \
@@ -126,84 +151,126 @@ jobs:
       - name: Organize final artifacts
         shell: bash
         run: |
-          echo "📦 Organizing final PKG installers..."
+          echo "📦 Organizing final distribution packages..."
           
-          # The create-macos-pkg.sh script already creates the final packages
-          # Just verify and display what was created
+          # Check what was actually created
+          pkg_count=$(find artifacts/ -name "*.pkg" 2>/dev/null | wc -l)
+          dmg_count=$(find artifacts/ -name "*.dmg" 2>/dev/null | wc -l)
           
-          echo "✅ PKG Installers created:"
-          find artifacts/ -name "*.pkg" | while read pkg; do
-            if [ -f "$pkg" ]; then
-              size=$(du -h "$pkg" | cut -f1)
-              echo "  📦 $(basename "$pkg") ($size)"
+          if [ "$pkg_count" -gt 0 ]; then
+            echo "✅ PKG Installers created (primary distribution format):"
+            find artifacts/ -name "*.pkg" | while read pkg; do
+              if [ -f "$pkg" ]; then
+                size=$(du -h "$pkg" | cut -f1)
+                echo "  📦 $(basename "$pkg") ($size) - READY FOR DISTRIBUTION"
+              fi
+            done
+          fi
+          
+          if [ "$dmg_count" -gt 0 ]; then
+            if [ "$pkg_count" -gt 0 ]; then
+              echo ""
+              echo "📍 Optional DMG files:"
+            else
+              echo "✅ DMG Files created (fallback distribution format):"
             fi
-          done
+            find artifacts/ -name "*.dmg" | while read dmg; do
+              if [ -f "$dmg" ]; then
+                size=$(du -h "$dmg" | cut -f1)
+                echo "  💿 $(basename "$dmg") ($size)"
+              fi
+            done
+          fi
+          
+          if [ "$pkg_count" -eq 0 ] && [ "$dmg_count" -eq 0 ]; then
+            echo "❌ No distribution packages were created"
+            exit 1
+          fi
           
           echo ""
-          echo "📍 Optional DMG files:"
-          find artifacts/ -name "*.dmg" | while read dmg; do
-            if [ -f "$dmg" ]; then
-              size=$(du -h "$dmg" | cut -f1)
-              echo "  💿 $(basename "$dmg") ($size)"
-            fi
-          done
-          
-          echo ""
-          echo "✅ All artifacts ready for distribution"
+          echo "✅ Distribution packages ready"
 
-      - name: Validate PKG installers
+      - name: Validate distribution packages
         shell: bash
         run: |
-          echo "🔍 Validating PKG installers (primary distribution format)..."
+          echo "🔍 Validating distribution packages..."
           
-          pkg_count=0
-          find artifacts/ -name "*.pkg" | while read file; do
-            if [ -f "$file" ]; then
-              pkg_count=$((pkg_count + 1))
-              echo "Validating PKG: $(basename "$file")"
-              
-              # Check PKG signature
-              if pkgutil --check-signature "$file" 2>/dev/null | grep -q "signed"; then
-                echo "  ✅ PKG signature valid"
-              else
-                echo "  ❌ PKG signature invalid"
+          # Validate PKG installers (primary format)
+          pkg_count=$(find artifacts/ -name "*.pkg" 2>/dev/null | wc -l)
+          if [ "$pkg_count" -gt 0 ]; then
+            echo "📦 Validating PKG installers (primary distribution format)..."
+            
+            find artifacts/ -name "*.pkg" | while read file; do
+              if [ -f "$file" ]; then
+                echo "Validating PKG: $(basename "$file")"
+                
+                # Check PKG signature
+                if pkgutil --check-signature "$file" 2>/dev/null | grep -q "signed"; then
+                  echo "  ✅ PKG signature valid"
+                else
+                  echo "  ❌ PKG signature invalid"
+                fi
+                
+                # Check Gatekeeper compatibility
+                if spctl --assess --type install "$file" 2>/dev/null; then
+                  echo "  ✅ PKG passes Gatekeeper assessment"
+                else
+                  echo "  ⚠️ PKG Gatekeeper assessment failed (may be normal before distribution)"
+                fi
+                
+                # Check notarization stapling
+                if xcrun stapler validate "$file" 2>/dev/null; then
+                  echo "  ✅ Notarization ticket stapled"
+                else
+                  echo "  ⚠️ No notarization ticket found"
+                fi
+                
+                echo ""
               fi
-              
-              # Check Gatekeeper compatibility for installers
-              if spctl --assess --type install "$file" 2>/dev/null; then
-                echo "  ✅ PKG passes Gatekeeper assessment"
-              else
-                echo "  ⚠️ PKG Gatekeeper assessment failed (may be normal before distribution)"
-              fi
-              
-              # Check notarization stapling
-              if xcrun stapler validate "$file" 2>/dev/null; then
-                echo "  ✅ Notarization ticket stapled"
-              else
-                echo "  ⚠️ No notarization ticket found"
-              fi
-              
-              echo ""
+            done
+          fi
+          
+          # Validate DMG files
+          dmg_count=$(find artifacts/ -name "*.dmg" 2>/dev/null | wc -l)
+          if [ "$dmg_count" -gt 0 ]; then
+            if [ "$pkg_count" -gt 0 ]; then
+              echo "📍 Validating optional DMG files..."
+            else
+              echo "💿 Validating DMG files (fallback distribution format)..."
             fi
-          done
-          
-          echo "📍 Optional DMG validation..."
-          find artifacts/ -name "*.dmg" | while read file; do
-            if [ -f "$file" ]; then
-              echo "Validating DMG: $(basename "$file")"
-              
-              # Check DMG signature
-              if codesign --verify --deep --strict "$file" 2>/dev/null; then
-                echo "  ✅ DMG signature valid"
-              else
-                echo "  ⚠️ DMG signature verification failed"
+            
+            find artifacts/ -name "*.dmg" | while read file; do
+              if [ -f "$file" ]; then
+                echo "Validating DMG: $(basename "$file")"
+                
+                # Check DMG signature
+                if codesign --verify --deep --strict "$file" 2>/dev/null; then
+                  echo "  ✅ DMG signature valid"
+                else
+                  echo "  ⚠️ DMG signature verification failed"
+                fi
+                
+                # Check notarization stapling
+                if xcrun stapler validate "$file" 2>/dev/null; then
+                  echo "  ✅ Notarization ticket stapled"
+                else
+                  echo "  ⚠️ No notarization ticket found"
+                fi
+                
+                echo ""
               fi
-              
-              echo ""
-            fi
-          done
+            done
+          fi
           
-          echo "✅ PKG installer validation complete"
+          # Summary
+          if [ "$pkg_count" -gt 0 ]; then
+            echo "✅ PKG installer validation complete - ready for distribution"
+          elif [ "$dmg_count" -gt 0 ]; then
+            echo "✅ DMG validation complete - fallback distribution ready"
+          else
+            echo "❌ No packages found to validate"
+            exit 1
+          fi
 
       - name: Upload artifacts
         id: upload

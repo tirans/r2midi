@@ -206,6 +206,8 @@ echo "✅ Key partition list set"
 echo "Step 10: Verifying certificate setup..."
 echo "Available signing identities:"
 security find-identity -v -p codesigning "$TEMP_KEYCHAIN"
+echo "Available installer identities:"
+security find-identity -v "$TEMP_KEYCHAIN" | grep "Developer ID Installer" || echo "No installer certificates found"
 
 # Check for required certificates
 if security find-identity -v -p codesigning "$TEMP_KEYCHAIN" | grep -q "Developer ID Application"; then
@@ -217,10 +219,10 @@ else
     exit 1
 fi
 
-# Installer certificate is optional but recommended
-if security find-identity -v -p codesigning "$TEMP_KEYCHAIN" | grep -q "Developer ID Installer"; then
+# Installer certificate is optional but recommended - search in all identities
+if security find-identity -v "$TEMP_KEYCHAIN" | grep -q "Developer ID Installer"; then
     echo "✅ Installer signing certificate found"
-    INSTALLER_IDENTITY=$(security find-identity -v -p codesigning "$TEMP_KEYCHAIN" | grep "Developer ID Installer" | head -1 | cut -d'"' -f2)
+    INSTALLER_IDENTITY=$(security find-identity -v "$TEMP_KEYCHAIN" | grep "Developer ID Installer" | head -1 | cut -d'"' -f2)
     echo "Installer Identity: $INSTALLER_IDENTITY"
 else
     echo "⚠️ Warning: Installer signing certificate not found (PKG creation will be skipped)"

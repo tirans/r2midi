@@ -20,6 +20,17 @@ echo "Priority: .pkg installers (with optional .dmg)"
 if [ -f "/tmp/signing_identities.sh" ]; then
     source /tmp/signing_identities.sh
     echo "📋 Loaded signing identities from certificate setup"
+    echo "🔍 Available identities:"
+    echo "  - APPLICATION_SIGNING_IDENTITY: ${APPLICATION_SIGNING_IDENTITY:-'Not set'}"
+    echo "  - INSTALLER_SIGNING_IDENTITY: ${INSTALLER_SIGNING_IDENTITY:-'Not set'}"
+    
+    # Debug: Show all available certificates
+    echo "🔍 All certificates in keychain:"
+    if [ -n "${TEMP_KEYCHAIN:-}" ]; then
+        security find-identity -v "$TEMP_KEYCHAIN" 2>/dev/null || echo "Could not list keychain identities"
+    else
+        security find-identity -v 2>/dev/null || echo "Could not list system identities"
+    fi
 else
     echo "❌ Error: Certificate setup not found. Run setup-certificates.sh first"
     exit 1
@@ -41,6 +52,16 @@ fi
 if [ -z "${INSTALLER_SIGNING_IDENTITY:-}" ]; then
     echo "❌ Error: No installer signing identity found"
     echo "PKG creation requires 'Developer ID Installer' certificate"
+    echo ""
+    echo "🔍 Certificate Requirements for PKG Creation:"
+    echo "  1. Developer ID Application certificate (for app signing) - ✅ Available"
+    echo "  2. Developer ID Installer certificate (for PKG signing) - ❌ Missing"
+    echo ""
+    echo "📝 Available Options:"
+    echo "  - Add Developer ID Installer certificate to your GitHub secrets"
+    echo "  - Or use DMG-only distribution (modify workflow to skip PKG creation)"
+    echo ""
+    echo "🔗 More info: https://developer.apple.com/support/certificates/"
     exit 1
 fi
 

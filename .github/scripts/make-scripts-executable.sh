@@ -33,6 +33,7 @@ NEW_SCRIPTS=(
     "generate-build-summary.sh"
     "setup-macos-signing.sh"
     "create-macos-pkg.sh"
+    "create-macos-dmg-fallback.sh"
     "validate-macos-distribution.sh"
 )
 
