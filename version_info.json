@@ -1,8 +1,8 @@
 {
-  "version": "0.1.163",
+  "version": "0.1.164",
   "major": 0,
   "minor": 0,
   "patch": 0,
-  "extractedDate": "2025-06-15 06:07:18 UTC",
+  "extractedDate": "2025-06-16 13:18:48 UTC",
   "sourceFile": "server/version.py"
 }

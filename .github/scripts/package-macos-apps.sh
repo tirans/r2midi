@@ -14,182 +14,207 @@ echo "Build Type: $BUILD_TYPE"
 # Ensure artifacts directory exists
 mkdir -p artifacts
 
-# Function to verify and organize signed DMG files
-organize_dmg_files() {
-    echo "🔍 Looking for signed DMG files..."
+# Function to organize and verify signed files
+organize_signed_files() {
+    echo "🔍 Organizing signed files from artifacts..."
     
-    find . -maxdepth 1 -name "*.dmg" | while read dmg_file; do
-        if [ -f "$dmg_file" ]; then
-            local dmg_name=$(basename "$dmg_file")
-            local new_name="R2MIDI-${dmg_name}"
-            
-            echo "📦 Processing DMG: $dmg_name"
-            
-            # Verify the DMG is signed
-            if codesign -dv "$dmg_file" 2>&1 | grep -q "Developer ID"; then
-                echo "✅ DMG is properly signed"
-            else
-                echo "⚠️ Warning: DMG may not be properly signed"
+    # The sign-and-notarize script should have already placed files in artifacts/
+    # We just need to verify and possibly rename them
+    
+    if [ -d "artifacts" ]; then
+        find artifacts/ -name "*.dmg" -o -name "*.pkg" | while read file; do
+            if [ -f "$file" ]; then
+                local filename=$(basename "$file")
+                echo "📦 Found signed file: $filename"
+                
+                # Verify the file is properly signed and notarized
+                if [[ "$filename" == *.dmg ]]; then
+                    echo "🔍 Verifying DMG: $filename"
+                    
+                    # Check code signature
+                    if codesign --verify --deep --strict "$file" 2>/dev/null; then
+                        echo "  ✅ DMG signature valid"
+                    else
+                        echo "  ⚠️ DMG signature verification failed"
+                    fi
+                    
+                    # Check Gatekeeper assessment
+                    if spctl --assess --type install "$file" 2>/dev/null; then
+                        echo "  ✅ DMG passes Gatekeeper assessment"
+                    else
+                        echo "  ⚠️ DMG fails Gatekeeper assessment"
+                    fi
+                    
+                elif [[ "$filename" == *.pkg ]]; then
+                    echo "🔍 Verifying PKG: $filename"
+                    
+                    # Check PKG signature
+                    if pkgutil --check-signature "$file" 2>/dev/null | grep -q "signed"; then
+                        echo "  ✅ PKG signature valid"
+                    else
+                        echo "  ⚠️ PKG signature verification failed"
+                    fi
+                    
+                    # Check Gatekeeper assessment
+                    if spctl --assess --type install "$file" 2>/dev/null; then
+                        echo "  ✅ PKG passes Gatekeeper assessment"
+                    else
+                        echo "  ⚠️ PKG fails Gatekeeper assessment"
+                    fi
+                fi
+                
+                # Check notarization stapling
+                if xcrun stapler validate "$file" 2>/dev/null; then
+                    echo "  ✅ Notarization ticket stapled"
+                else
+                    echo "  ⚠️ No notarization ticket found"
+                fi
             fi
-            
-            # Verify notarization
-            if spctl --assess --type install "$dmg_file" 2>&1 | grep -q "accepted"; then
-                echo "✅ DMG is notarized and accepted by Gatekeeper"
-            else
-                echo "⚠️ Warning: DMG may not be properly notarized"
-            fi
-            
-            # Copy to artifacts with proper naming
-            cp "$dmg_file" "artifacts/$new_name"
-            echo "✅ Packaged DMG: artifacts/$new_name"
-        fi
-    done
+        done
+    fi
 }
 
-# Function to verify and organize signed PKG files
-organize_pkg_files() {
-    echo "🔍 Looking for signed PKG files..."
+# Function to create a universal distribution package
+create_universal_package() {
+    echo "🌍 Creating universal distribution package..."
     
-    find . -maxdepth 1 -name "*.pkg" | while read pkg_file; do
-        if [ -f "$pkg_file" ]; then
-            local pkg_name=$(basename "$pkg_file")
-            local new_name="R2MIDI-${pkg_name}"
-            
-            echo "📦 Processing PKG: $pkg_name"
-            
-            # Verify the PKG is signed
-            if pkgutil --check-signature "$pkg_file" | grep -q "signed"; then
-                echo "✅ PKG is properly signed"
-            else
-                echo "⚠️ Warning: PKG may not be properly signed"
-            fi
-            
-            # Verify notarization
-            if spctl --assess --type install "$pkg_file" 2>&1 | grep -q "accepted"; then
-                echo "✅ PKG is notarized and accepted by Gatekeeper"
-            else
-                echo "⚠️ Warning: PKG may not be properly notarized"
-            fi
-            
-            # Copy to artifacts with proper naming
-            cp "$pkg_file" "artifacts/$new_name"
-            echo "✅ Packaged PKG: artifacts/$new_name"
-        fi
-    done
-}
-
-# Function to create a combined installer if multiple apps exist
-create_combined_installer() {
     local server_dmg=""
     local client_dmg=""
+    local found_dmgs=()
     
     # Find individual DMG files
-    server_dmg=$(find artifacts/ -name "*Server*.dmg" | head -1)
-    client_dmg=$(find artifacts/ -name "*Client*.dmg" | head -1)
+    if [ -d "artifacts" ]; then
+        while IFS= read -r -d '' dmg; do
+            found_dmgs+=("$dmg")
+            if [[ "$(basename "$dmg")" == *"server"* ]] || [[ "$(basename "$dmg")" == *"Server"* ]]; then
+                server_dmg="$dmg"
+            elif [[ "$(basename "$dmg")" == *"client"* ]] || [[ "$(basename "$dmg")" == *"Client"* ]]; then
+                client_dmg="$dmg"
+            fi
+        done < <(find artifacts/ -name "*.dmg" -print0)
+    fi
     
-    if [ -n "$server_dmg" ] && [ -n "$client_dmg" ] && [ -f "$server_dmg" ] && [ -f "$client_dmg" ]; then
-        echo "📦 Creating combined installer package..."
+    echo "Found ${#found_dmgs[@]} DMG files"
+    [ -n "$server_dmg" ] && echo "Server DMG: $(basename "$server_dmg")"
+    [ -n "$client_dmg" ] && echo "Client DMG: $(basename "$client_dmg")"
+    
+    # Create a distribution bundle if we have multiple apps
+    if [ ${#found_dmgs[@]} -gt 1 ]; then
+        local bundle_name="R2MIDI-Complete-${VERSION}-macOS"
+        local bundle_dir="artifacts/${bundle_name}"
         
-        local combined_name="R2MIDI-Complete-${VERSION}-macOS.dmg"
-        local temp_dir=$(mktemp -d)
-        local mount_point1="$temp_dir/server_mount"
-        local mount_point2="$temp_dir/client_mount"
-        local package_dir="$temp_dir/R2MIDI-Complete-${VERSION}"
+        echo "📦 Creating complete distribution bundle: $bundle_name"
+        mkdir -p "$bundle_dir"
         
-        mkdir -p "$mount_point1" "$mount_point2" "$package_dir"
+        # Copy all DMGs to the bundle
+        for dmg in "${found_dmgs[@]}"; do
+            cp "$dmg" "$bundle_dir/"
+        done
         
-        # Mount and copy server app
-        if hdiutil attach "$server_dmg" -mountpoint "$mount_point1" -readonly; then
-            find "$mount_point1" -name "*.app" -type d | while read app; do
-                cp -R "$app" "$package_dir/"
-            done
-            hdiutil detach "$mount_point1"
-        fi
+        # Copy PKGs if they exist
+        find artifacts/ -name "*.pkg" -exec cp {} "$bundle_dir/" \;
         
-        # Mount and copy client app
-        if hdiutil attach "$client_dmg" -mountpoint "$mount_point2" -readonly; then
-            find "$mount_point2" -name "*.app" -type d | while read app; do
-                cp -R "$app" "$package_dir/"
-            done
-            hdiutil detach "$mount_point2"
-        fi
-        
-        # Add documentation
-        if [ -f "README.md" ]; then
-            cp README.md "$package_dir/"
-        fi
-        if [ -f "LICENSE" ]; then
-            cp LICENSE "$package_dir/"
-        fi
-        
-        # Create installation instructions
-        cat > "$package_dir/Installation Instructions.txt" << EOF
-R2MIDI Complete Installation Instructions
-=========================================
+        # Create installation guide
+        cat > "$bundle_dir/INSTALLATION_GUIDE.md" << EOF
+# R2MIDI Installation Guide
 
 Version: $VERSION
-Platform: macOS (signed and notarized)
+Build Type: $BUILD_TYPE
+Platform: macOS (Signed & Notarized)
 
-This package contains both the R2MIDI Server and Client applications.
+## What's Included
 
-Installation:
-1. Drag both applications to your Applications folder
-2. The applications are signed and notarized, so they should run without security warnings
+This package contains the complete R2MIDI suite:
 
-Usage:
-1. Start the R2MIDI Server application first
-2. Then start the R2MIDI Client application
-3. The Client will automatically connect to the local Server
+EOF
 
-System Requirements:
+        # List included files
+        find "$bundle_dir" -name "*.dmg" -o -name "*.pkg" | while read file; do
+            local filename=$(basename "$file")
+            local size=$(du -h "$file" | cut -f1)
+            echo "- **$filename** ($size)" >> "$bundle_dir/INSTALLATION_GUIDE.md"
+            
+            # Add description based on filename
+            if [[ "$filename" == *"server"* ]] || [[ "$filename" == *"Server"* ]]; then
+                echo "  - R2MIDI Server application (run this first)" >> "$bundle_dir/INSTALLATION_GUIDE.md"
+            elif [[ "$filename" == *"client"* ]] || [[ "$filename" == *"Client"* ]]; then
+                echo "  - R2MIDI Client application (connects to server)" >> "$bundle_dir/INSTALLATION_GUIDE.md"
+            fi
+        done
+
+        cat >> "$bundle_dir/INSTALLATION_GUIDE.md" << EOF
+
+## Installation Instructions
+
+### Method 1: DMG Installation (Recommended)
+1. Open each .dmg file by double-clicking
+2. Drag the application to your Applications folder
+3. Eject the disk image when done
+
+### Method 2: PKG Installation (Automated)
+1. Double-click the .pkg file
+2. Follow the installer prompts
+3. The application will be installed to /Applications
+
+## Running R2MIDI
+
+1. **Start the Server first**: Launch R2MIDI Server from Applications
+2. **Start the Client**: Launch R2MIDI Client from Applications
+3. The client will automatically connect to the local server
+
+## System Requirements
+
 - macOS 11.0 (Big Sur) or later
-- Apple Silicon (M1/M2) or Intel processor
+- Apple Silicon (M1/M2/M3) or Intel processor
+- Administrator privileges for initial installation
 
-Security:
-- Both applications are signed with Apple Developer ID
-- Both applications are notarized by Apple
-- Safe to run on macOS with default security settings
+## Security Information
 
-Support:
+- All applications are signed with Apple Developer ID
+- All applications are notarized by Apple
+- Safe to run with default macOS security settings
+- No additional security warnings should appear
+
+## Troubleshooting
+
+### "App is damaged and can't be opened"
+This usually means the download was corrupted. Try downloading again.
+
+### "App can't be opened because it's from an unidentified developer"
+This shouldn't happen with properly notarized apps. If it does:
+1. Right-click the app and select "Open"
+2. Click "Open" in the security dialog
+
+### Connection Issues
+1. Ensure both Server and Client are running
+2. Check firewall settings allow R2MIDI connections
+3. Restart both applications if needed
+
+## Support
+
 - GitHub: https://github.com/tirans/r2midi
 - Issues: https://github.com/tirans/r2midi/issues
+- Documentation: https://github.com/tirans/r2midi/wiki
+
+---
+Generated on $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 EOF
+
+        # Create a ZIP archive of the complete bundle
+        local zip_name="${bundle_name}.zip"
+        echo "🗜️ Creating ZIP archive: $zip_name"
+        (cd artifacts && zip -r "$zip_name" "$(basename "$bundle_dir")")
         
-        # Create the combined DMG
-        if command -v create-dmg >/dev/null 2>&1; then
-            create-dmg \
-                --volname "R2MIDI Complete $VERSION" \
-                --volicon "r2midi.icns" \
-                --window-pos 200 120 \
-                --window-size 800 600 \
-                --icon-size 100 \
-                --app-drop-link 600 300 \
-                "$combined_name" \
-                "$package_dir"
-        else
-            # Fallback to hdiutil
-            hdiutil create -format UDZO -srcfolder "$package_dir" -volname "R2MIDI Complete $VERSION" "$combined_name"
-        fi
-        
-        # Move to artifacts directory
-        if [ -f "$combined_name" ]; then
-            mv "$combined_name" artifacts/
-            echo "✅ Created combined installer: artifacts/$combined_name"
-        fi
-        
-        # Cleanup
-        rm -rf "$temp_dir"
-    else
-        echo "ℹ️ Cannot create combined installer - missing individual DMG files"
+        echo "✅ Created universal package: artifacts/$zip_name"
     fi
 }
 
 # Function to create checksums for all packages
 create_checksums() {
-    echo "🔒 Creating checksums for packages..."
+    echo "🔒 Creating checksums for all packages..."
     
     if [ -d "artifacts" ] && [ "$(ls -A artifacts/)" ]; then
-        (cd artifacts && find . -name "*.dmg" -o -name "*.pkg" | while read file; do
+        (cd artifacts && find . -name "*.dmg" -o -name "*.pkg" -o -name "*.zip" | while read file; do
             if [ -f "$file" ]; then
                 echo "🔸 Creating checksum for $(basename "$file")..."
                 shasum -a 256 "$file" >> CHECKSUMS.txt
@@ -202,74 +227,123 @@ create_checksums() {
     fi
 }
 
-# Main packaging workflow
-echo "🔍 Organizing macOS packages..."
-
-# Organize signed DMG and PKG files
-organize_dmg_files
-organize_pkg_files
-
-# Create combined installer if possible
-create_combined_installer
-
-# Create checksums
-create_checksums
-
-# Generate package information
-cat > artifacts/MACOS_PACKAGES.txt << EOF
-macOS Package Information
-========================
+# Function to generate final package manifest
+generate_manifest() {
+    echo "📋 Generating package manifest..."
+    
+    cat > artifacts/PACKAGE_MANIFEST.txt << EOF
+R2MIDI macOS Package Manifest
+============================
 
 Version: $VERSION
 Build Type: $BUILD_TYPE
-Platform: macOS (signed and notarized)
-Package Tool: Custom packaging script
-Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+Platform: macOS (Signed & Notarized)
+Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
-Signing Details:
+Package Details:
 - Code Signing: Apple Developer ID Application
-- Installer Signing: Apple Developer ID Installer (for PKG)
-- Notarization: Apple Notary Service
-- Gatekeeper: Compatible with all macOS security settings
+- Installer Signing: Apple Developer ID Installer (PKG only)
+- Notarization: Apple Notary Service with stapling
+- Compatibility: macOS 11.0+ (Big Sur or later)
+- Architecture: Universal (Apple Silicon + Intel)
 
-Package Types:
-- DMG: Disk image installers (drag and drop)
-- PKG: Package installers (automated installation)
-
-Created Packages:
+Distribution Files:
 EOF
 
-# List all created packages
-if [ -d "artifacts" ] && [ "$(ls -A artifacts/)" ]; then
-    find artifacts/ -name "*.dmg" -o -name "*.pkg" | sort | while read file; do
-        if [ -f "$file" ]; then
-            size=$(du -h "$file" | cut -f1)
-            echo "  - $(basename "$file") ($size)" >> artifacts/MACOS_PACKAGES.txt
-            
-            # Add signature verification info
-            if [[ "$file" == *.dmg ]]; then
-                if codesign -dv "$file" 2>&1 | grep -q "Developer ID"; then
-                    echo "    ✅ Signed and verified" >> artifacts/MACOS_PACKAGES.txt
+    # List all distribution files with details
+    if [ -d "artifacts" ]; then
+        find artifacts/ -name "*.dmg" -o -name "*.pkg" -o -name "*.zip" | sort | while read file; do
+            if [ -f "$file" ]; then
+                local filename=$(basename "$file")
+                local size=$(du -h "$file" | cut -f1)
+                local modified=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file")
+                
+                echo "📦 $filename ($size) - $modified" >> artifacts/PACKAGE_MANIFEST.txt
+                
+                # Add technical details
+                if [[ "$filename" == *.dmg ]]; then
+                    echo "   Type: Disk Image (drag-and-drop installer)" >> artifacts/PACKAGE_MANIFEST.txt
+                    if codesign --verify --deep --strict "$file" 2>/dev/null; then
+                        echo "   Status: Signed ✅" >> artifacts/PACKAGE_MANIFEST.txt
+                    else
+                        echo "   Status: Unsigned ❌" >> artifacts/PACKAGE_MANIFEST.txt
+                    fi
+                elif [[ "$filename" == *.pkg ]]; then
+                    echo "   Type: Package Installer (automated installation)" >> artifacts/PACKAGE_MANIFEST.txt
+                    if pkgutil --check-signature "$file" 2>/dev/null | grep -q "signed"; then
+                        echo "   Status: Signed ✅" >> artifacts/PACKAGE_MANIFEST.txt
+                    else
+                        echo "   Status: Unsigned ❌" >> artifacts/PACKAGE_MANIFEST.txt
+                    fi
+                elif [[ "$filename" == *.zip ]]; then
+                    echo "   Type: Archive (complete distribution bundle)" >> artifacts/PACKAGE_MANIFEST.txt
+                    echo "   Status: Compressed bundle ✅" >> artifacts/PACKAGE_MANIFEST.txt
                 fi
-            elif [[ "$file" == *.pkg ]]; then
-                if pkgutil --check-signature "$file" | grep -q "signed"; then
-                    echo "    ✅ Signed and verified" >> artifacts/MACOS_PACKAGES.txt
+                
+                # Add notarization status
+                if xcrun stapler validate "$file" 2>/dev/null; then
+                    echo "   Notarization: Stapled ✅" >> artifacts/PACKAGE_MANIFEST.txt
+                elif [[ "$filename" == *.zip ]]; then
+                    echo "   Notarization: N/A (archive)" >> artifacts/PACKAGE_MANIFEST.txt
+                else
+                    echo "   Notarization: Not stapled ❌" >> artifacts/PACKAGE_MANIFEST.txt
                 fi
+                
+                echo "" >> artifacts/PACKAGE_MANIFEST.txt
             fi
+        done
+    fi
+
+    # Add checksum information if available
+    if [ -f "artifacts/CHECKSUMS.txt" ]; then
+        echo "SHA256 Checksums:" >> artifacts/PACKAGE_MANIFEST.txt
+        echo "=================" >> artifacts/PACKAGE_MANIFEST.txt
+        cat artifacts/CHECKSUMS.txt >> artifacts/PACKAGE_MANIFEST.txt
+    fi
+    
+    echo "✅ Package manifest created: artifacts/PACKAGE_MANIFEST.txt"
+}
+
+# Main packaging workflow
+echo "🚀 Starting macOS packaging workflow..."
+
+# Step 1: Organize and verify existing signed files
+organize_signed_files
+
+# Step 2: Create universal distribution package if applicable
+create_universal_package
+
+# Step 3: Create checksums for all packages
+create_checksums
+
+# Step 4: Generate final manifest
+generate_manifest
+
+# Final summary
+echo ""
+echo "✅ macOS packaging complete!"
+echo ""
+
+if [ -d "artifacts" ] && [ "$(ls -A artifacts/)" ]; then
+    echo "📦 Created packages:"
+    find artifacts/ -name "*.dmg" -o -name "*.pkg" -o -name "*.zip" | sort | while read file; do
+        if [ -f "$file" ]; then
+            local size=$(du -h "$file" | cut -f1)
+            echo "  - $(basename "$file") ($size)"
+        fi
+    done
+    
+    echo ""
+    echo "📋 Documentation files:"
+    find artifacts/ -name "*.txt" -o -name "*.md" | sort | while read file; do
+        if [ -f "$file" ]; then
+            echo "  - $(basename "$file")"
         fi
     done
 else
-    echo "  - No packages generated" >> artifacts/MACOS_PACKAGES.txt
-fi
-
-# Add checksum information
-if [ -f "artifacts/CHECKSUMS.txt" ]; then
-    echo "" >> artifacts/MACOS_PACKAGES.txt
-    echo "SHA256 Checksums:" >> artifacts/MACOS_PACKAGES.txt
-    cat artifacts/CHECKSUMS.txt >> artifacts/MACOS_PACKAGES.txt
+    echo "❌ No packages were created"
+    exit 1
 fi
 
 echo ""
-echo "✅ macOS packaging complete!"
-echo "📋 Package summary:"
-cat artifacts/MACOS_PACKAGES.txt
+echo "📋 All files ready in artifacts/ directory"

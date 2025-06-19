@@ -85,16 +85,16 @@ echo "📋 pyproject.toml: '$PYPROJECT_VERSION'"
 if [ "$VERSION" != "$PYPROJECT_VERSION" ]; then
     echo "⚠️ Warning: Version mismatch between server/version.py ($VERSION) and pyproject.toml ($PYPROJECT_VERSION)"
     echo "Using server/version.py version: $VERSION"
-    
+
     # Escape special characters for sed (dots become literal dots)
     ESCAPED_OLD_VERSION=$(echo "$PYPROJECT_VERSION" | sed 's/\./\\./g')
     ESCAPED_NEW_VERSION=$(echo "$VERSION" | sed 's/\./\\./g')
-    
+
     # Update pyproject.toml version to match using a more robust approach
     if sed -i.bak "1,/^version = \"$ESCAPED_OLD_VERSION\"/s/^version = \"$ESCAPED_OLD_VERSION\"/version = \"$VERSION\"/" pyproject.toml; then
         rm -f pyproject.toml.bak
         echo "✅ Updated pyproject.toml version to match"
-        
+
         # Verify the update worked
         NEW_PYPROJECT_VERSION=$(grep '^version = ' pyproject.toml | head -1 | cut -d'"' -f2 | tr -d '\n\r')
         if [ "$VERSION" = "$NEW_PYPROJECT_VERSION" ]; then
@@ -183,7 +183,7 @@ fi
 
 # Check package with twine
 echo "🔍 Running package checks..."
-python -m twine check dist/*
+python -m twine check dist/*.whl dist/*.tar.gz
 
 if [ $? -ne 0 ]; then
     echo "❌ Error: Package validation failed"
@@ -205,7 +205,7 @@ wheel_file=$(find dist/ -name "*.whl" | head -1)
 if [ -n "$wheel_file" ]; then
     echo "📦 Testing wheel installation: $(basename "$wheel_file")"
     pip install "$wheel_file"
-    
+
     # Test basic import
     if python -c "import server.main, r2midi_client.main" 2>/dev/null; then
         echo "✅ Package imports successfully"

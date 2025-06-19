@@ -1,9 +1,2 @@
-# Additional requirements for the Apple Store setup script
-# Install with: pip install -r scripts/requirements.txt
-
-# For GitHub API integration and secret encryption
-requests>=2.31.0
+requests>=2.28.0
 PyNaCl>=1.5.0
-
-# Already included in main requirements but needed for setup
-pydantic>=2.4.2

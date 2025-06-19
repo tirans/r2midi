@@ -31,6 +31,7 @@ NEW_SCRIPTS=(
     "setup-environment.sh"
     "extract-version.sh"
     "generate-build-summary.sh"
+    "setup-macos-signing.sh"
 )
 
 echo ""

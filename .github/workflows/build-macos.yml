@@ -17,10 +17,19 @@ on:
         description: "Name of the uploaded artifact"
         value: ${{ jobs.build-macos.outputs.artifact-name }}
     secrets:
+      # Support both individual certificates (preferred) and combined P12 (legacy)
+      APPLE_DEVELOPER_ID_APPLICATION_CERT:
+        required: false
+      APPLE_DEVELOPER_ID_INSTALLER_CERT:
+        required: false
+      APPLE_CERT_PASSWORD:
+        required: false
+      # GitHub workflow standard format (alternative)
       APPLE_CERTIFICATE_P12:
-        required: true
+        required: false
       APPLE_CERTIFICATE_PASSWORD:
-        required: true
+        required: false
+      # Required for notarization
       APPLE_ID:
         required: true
       APPLE_ID_PASSWORD:
@@ -43,7 +52,7 @@ jobs:
   build-macos:
     name: Build macOS Apps (Signed & Notarized)
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 90
     outputs:
       artifact-name: ${{ steps.upload.outputs.artifact-name }}
 
@@ -84,13 +93,16 @@ jobs:
           ./.github/scripts/install-python-dependencies.sh production
 
       - name: Setup Apple Developer certificates
-        uses: GuillaumeFalourd/sign-and-notarize-gha@v1
-        with:
-          certificate-p12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          apple-id: ${{ secrets.APPLE_ID }}
-          apple-id-password: ${{ secrets.APPLE_ID_PASSWORD }}
-          apple-team-id: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        env:
+          # Support both certificate formats
+          APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
+          APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          ./.github/scripts/setup-certificates.sh
 
       - name: Build applications
         shell: bash
@@ -99,6 +111,10 @@ jobs:
 
       - name: Sign and notarize applications
         shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           ./.github/scripts/sign-and-notarize-macos.sh \
             "${{ steps.version.outputs.version }}" \
@@ -107,18 +123,43 @@ jobs:
             "${{ secrets.APPLE_ID_PASSWORD }}" \
             "${{ secrets.APPLE_TEAM_ID }}"
 
-      - name: Create signed PKG installers
-        uses: lando/notarize-action@v2
-        with:
-          product-path: "artifacts/R2MIDI-${{ steps.version.outputs.version }}.dmg"
-          apple-id: ${{ secrets.APPLE_ID }}
-          apple-id-password: ${{ secrets.APPLE_ID_PASSWORD }}
-          team-id: ${{ secrets.APPLE_TEAM_ID }}
-
       - name: Package final artifacts
         shell: bash
         run: |
           ./.github/scripts/package-macos-apps.sh "${{ steps.version.outputs.version }}" "${{ inputs.build-type }}"
+
+      - name: Validate signed packages
+        shell: bash
+        run: |
+          echo "🔍 Validating all signed packages..."
+          find artifacts/ -name "*.dmg" -o -name "*.pkg" | while read file; do
+            if [ -f "$file" ]; then
+              echo "Validating: $(basename "$file")"
+              
+              # Check code signature
+              if codesign --verify --deep --strict "$file" 2>/dev/null; then
+                echo "  ✅ Code signature valid"
+              else
+                echo "  ❌ Code signature invalid"
+              fi
+              
+              # Check Gatekeeper compatibility
+              if spctl --assess --type install "$file" 2>/dev/null; then
+                echo "  ✅ Gatekeeper accepts package"
+              else
+                echo "  ⚠️ Gatekeeper assessment failed (may be normal before distribution)"
+              fi
+              
+              # Check notarization stapling
+              if xcrun stapler validate "$file" 2>/dev/null; then
+                echo "  ✅ Notarization ticket stapled"
+              else
+                echo "  ⚠️ No notarization ticket found"
+              fi
+              
+              echo ""
+            fi
+          done
 
       - name: Upload artifacts
         id: upload
@@ -136,6 +177,23 @@ jobs:
 
       - name: Cleanup signing materials
         if: always()
+        shell: bash
         run: |
-          # Clean up any temporary certificates/keys
-          security delete-keychain signing.keychain 2>/dev/null || true
+          echo "🧹 Cleaning up signing materials..."
+          
+          # Remove temporary certificates
+          rm -f *.p12 2>/dev/null || true
+          
+          # Remove temporary keychain
+          if [ -n "${TEMP_KEYCHAIN:-}" ]; then
+            security delete-keychain "$TEMP_KEYCHAIN" 2>/dev/null || true
+          fi
+          
+          # Remove signing identities file
+          rm -f /tmp/signing_identities.sh 2>/dev/null || true
+          
+          # List remaining keychains for verification
+          echo "Remaining keychains:"
+          security list-keychains -d user
+          
+          echo "✅ Cleanup complete"

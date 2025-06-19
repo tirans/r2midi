@@ -1,192 +1,176 @@
-# R2MIDI Build Scripts
+# GitHub Secrets Manager for R2MIDI macOS Signing
 
-This directory contains scripts used by the GitHub Actions workflows to build and package R2MIDI applications.
+Complete automation tool for setting up GitHub repository secrets needed for macOS code signing and notarization.
 
-## Files Overview
+## Quick Start
 
-### 🔧 Core Build Scripts
+### Normal Usage (Idempotent)
+```bash
+# Only updates missing or changed secrets
+./scripts/quick_start.sh
+```
 
-#### `update_pyproject.py`
-Updates `pyproject.toml` with build metadata and signing configuration.
+### Force Update All Secrets
+```bash  
+# Updates ALL secrets regardless of current state
+./scripts/quick_start.sh --force
+```
+
+## Available Scripts
+
+### 1. `scripts/setup_github_secrets.py` (Main Script)
+The core idempotent secrets manager that handles all GitHub API operations.
 
 **Usage:**
 ```bash
-python scripts/update_pyproject.py \
-  --version "1.0.0" \
-  --author "Your Name" \
-  --author-email "you@example.com" \
-  --server-name "R2MIDI Server" \
-  --client-name "R2MIDI Client" \
-  --bundle-prefix "com.yourcompany" \
-  --codesign-identity "Developer ID Application: Your Name (TEAMID)"
+python scripts/setup_github_secrets.py [--force]
 ```
 
-**For App Store builds:**
-```bash
-python scripts/update_pyproject.py \
-  --app-store \
-  --codesign-identity "3rd Party Mac Developer Application: Your Name (TEAMID)" \
-  # ... other options
-```
+**Options:**
+- `--force`, `-f`: Force update all secrets even if they already exist
 
-#### `generate_icons.py`
-Generates application icons in various sizes and formats.
+### 2. `scripts/setup_complete_github_secrets.sh` (Wrapper)
+Complete setup script that handles dependencies and runs the main script.
 
 **Usage:**
 ```bash
-python scripts/generate_icons.py
+./scripts/setup_complete_github_secrets.sh [--force]
 ```
 
-Creates icons in `resources/` directory:
-- PNG files in various sizes (16x16 to 1024x1024)
-- ICO file for Windows
-- Platform-specific icon formats
-
-**Requirements:**
-```bash
-pip install pillow
-```
-
-### 🔍 Debug and Validation Scripts
-
-#### `debug_certificates.sh`
-Helps troubleshoot macOS code signing certificate issues.
+### 3. `scripts/quick_start.sh` (Interactive)
+Interactive setup with configuration testing and user prompts.
 
 **Usage:**
 ```bash
-# Debug the default briefcase keychain
-./scripts/debug_certificates.sh
-
-# Debug a specific keychain
-./scripts/debug_certificates.sh my_keychain.keychain
+./scripts/quick_start.sh [--force]
 ```
 
-**What it checks:**
-- Available signing identities
-- Certificate parsing methods
-- Keychain status and accessibility
-- Codesign functionality testing
-
-#### `validate_pyproject.py`
-Validates `pyproject.toml` for Briefcase compatibility.
+### 4. `scripts/test_github_setup.py` (Validator)
+Tests configuration and prerequisites without making changes.
 
 **Usage:**
 ```bash
-python scripts/validate_pyproject.py
+python scripts/test_github_setup.py
 ```
 
-**What it validates:**
-- Required project metadata
-- Briefcase configuration sections
-- App-specific settings
-- Icon file availability
+## When to Use Force Mode
 
-## GitHub Actions Integration
+### 🔥 Use `--force` When:
 
-These scripts are automatically used by the GitHub Actions workflows:
+1. **Certificate Changes**: You've renewed or changed your Apple Developer certificates
+2. **Password Updates**: You've changed your P12 password or app-specific password
+3. **Credential Refresh**: You want to refresh all credentials for security
+4. **Troubleshooting**: Some secrets may be corrupted or not working properly
+5. **Config Changes**: You've updated values in `app_config.json`
+6. **Fresh Start**: You want to ensure all secrets are current
 
-### In `build.yml`:
-- `generate_icons.py` - Creates icons for all builds
-- `update_pyproject.py` - Configures stable build metadata
+### ✅ Normal Mode (Default) When:
 
-### In `release.yml`:
-- `generate_icons.py` - Creates icons for signed builds
-- `update_pyproject.py` - Configures signing and notarization
-- `debug_certificates.sh` - (Can be used for troubleshooting)
+1. **First Time Setup**: Setting up secrets for the first time
+2. **Adding Missing Secrets**: Only some secrets are missing
+3. **Regular Usage**: Most common scenario for ongoing use
+4. **CI/CD Integration**: Automated runs that should be safe and fast
 
-## Local Development
+## What Gets Updated
 
-### Setting Up for Local Builds
+### Required for macOS Signing:
+- `APPLE_DEVELOPER_ID_APPLICATION_CERT` (base64 of app_cert.p12)
+- `APPLE_DEVELOPER_ID_INSTALLER_CERT` (base64 of installer_cert.p12)
+- `APPLE_CERT_PASSWORD` (P12 password)
+- `APPLE_ID` (Apple Developer account email)
+- `APPLE_ID_PASSWORD` (App-specific password)
+- `APPLE_TEAM_ID` (Apple Developer Team ID)
 
-1. **Generate icons:**
-   ```bash
-   python scripts/generate_icons.py
-   ```
+### Optional App Store Connect:
+- `APP_STORE_CONNECT_KEY_ID`
+- `APP_STORE_CONNECT_ISSUER_ID` 
+- `APP_STORE_CONNECT_API_KEY` (base64 of .p8 file)
 
-2. **Validate configuration:**
-   ```bash
-   python scripts/validate_pyproject.py
-   ```
+### Build Configuration:
+- `ENABLE_APP_STORE_BUILD`
+- `ENABLE_APP_STORE_SUBMISSION`
+- `ENABLE_NOTARIZATION`
 
-3. **Update pyproject.toml for local build:**
-   ```bash
-   python scripts/update_pyproject.py \
-     --version "dev" \
-     --author "Developer" \
-     --author-email "dev@localhost"
-   ```
+### App Information:
+- `APP_BUNDLE_ID_PREFIX`
+- `APP_AUTHOR_NAME`
+- `APP_AUTHOR_EMAIL`
 
-### Troubleshooting Code Signing (macOS)
+## Configuration Source
 
-If you're having code signing issues on macOS:
+All secrets are generated from:
+- `apple_credentials/config/app_config.json` - Main configuration
+- P12 certificate files (app_cert.p12, installer_cert.p12)
+- App Store Connect API key (.p8 file)
 
-1. **Debug certificates:**
-   ```bash
-   chmod +x scripts/debug_certificates.sh
-   ./scripts/debug_certificates.sh
-   ```
+## Examples
 
-2. **Check keychain setup:**
-   ```bash
-   security list-keychains
-   security find-identity -v -p codesigning
-   ```
-
-3. **Test signing:**
-   ```bash
-   echo "test" > test.txt
-   codesign -s "Your Developer ID" test.txt
-   rm test.txt
-   ```
-
-## Script Dependencies
-
-### Python Requirements:
+### Example 1: First Time Setup
 ```bash
-pip install pillow  # For generate_icons.py
-pip install tomli   # For validate_pyproject.py (Python < 3.11)
+# Normal idempotent setup
+./scripts/quick_start.sh
 ```
 
-### System Requirements:
-- **macOS**: Required for `debug_certificates.sh`
-- **All platforms**: Python 3.8+ for Python scripts
-
-## Common Issues and Solutions
-
-### Icon Generation Fails
+### Example 2: Certificate Renewal
 ```bash
-pip install --upgrade pillow
+# After renewing Apple Developer certificates
+./scripts/quick_start.sh --force
 ```
 
-### Certificate Parsing Issues
-Run the debug script to identify the correct parsing method:
+### Example 3: Troubleshooting
 ```bash
-./scripts/debug_certificates.sh
+# If builds are failing due to secret issues
+python scripts/setup_github_secrets.py --force
 ```
 
-### pyproject.toml Validation Errors
-Fix missing sections identified by:
+### Example 4: Testing Only
 ```bash
-python scripts/validate_pyproject.py
+# Just test configuration without changes
+python scripts/test_github_setup.py
 ```
 
-## File Permissions
+## Output Differences
 
-Make sure scripts are executable:
+### Normal Mode Output:
+```
+✅ Created secret: APPLE_DEVELOPER_ID_APPLICATION_CERT
+✅ Updated secret: APPLE_ID
+ℹ️  Created: 8, Updated: 5
+```
+
+### Force Mode Output:
+```
+🔥 FORCE updated secret: APPLE_DEVELOPER_ID_APPLICATION_CERT
+🔥 FORCE updated secret: APPLE_ID
+🔥 Force updated: 13 secrets
+```
+
+## Security Notes
+
+- Force mode re-encrypts all secrets with fresh values
+- All secrets are encrypted using repository's public key
+- No secrets are stored locally after upload
+- P12 certificates are re-encoded from source files
+- Safe to run multiple times in either mode
+
+## Troubleshooting
+
+### If secrets aren't working:
 ```bash
-chmod +x scripts/*.sh
-chmod +x scripts/*.py
+./scripts/quick_start.sh --force
 ```
 
-## Contributing
+### If configuration is wrong:
+```bash
+python scripts/test_github_setup.py
+```
 
-When modifying these scripts:
+### If certificates are missing:
+```bash
+cd .github/scripts
+./setup-macos-signing.sh
+```
 
-1. **Test locally** before committing
-2. **Update this README** if adding new scripts
-3. **Validate with both apps** (server and client)
-4. **Test on multiple platforms** when possible
+## Integration
 
-## License
-
-These scripts are part of the R2MIDI project and follow the same license terms.
+Works with GitHub Actions workflow in `.github/workflows/build-macos.yml` that expects these exact secret names for automated macOS code signing and notarization.

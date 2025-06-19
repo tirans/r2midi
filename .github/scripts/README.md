@@ -1,256 +1,336 @@
-# R2MIDI GitHub Actions Scripts
+# macOS Code Signing and Notarization Setup
 
-Centralized shell scripts for building, testing, and deploying R2MIDI applications across all platforms.
+This guide covers the complete setup for macOS code signing and notarization for R2MIDI applications for **distribution outside the Mac App Store**.
 
-## 📁 Script Categories
+## Overview
 
-### 🔧 Setup and Environment
-| Script | Purpose | Usage |
-|--------|---------|--------|
-| `setup-environment.sh` | Configure build environment, Git, PYTHONPATH | `./setup-environment.sh` |
-| `setup-scripts.sh` | Make all scripts executable | `./setup-scripts.sh` |
-| `make-scripts-executable.sh` | Utility to fix script permissions | `./make-scripts-executable.sh` |
+The R2MIDI project uses Apple's Developer ID signing and notarization to ensure applications can run on macOS without security warnings. This process involves:
 
-### 📦 Dependency Management
-| Script | Purpose | Usage |
-|--------|---------|--------|
-| `install-system-dependencies.sh` | Install platform-specific system packages | `./install-system-dependencies.sh <platform>` |
-| `install-python-dependencies.sh` | Install Python packages by build type | `./install-python-dependencies.sh <build_type>` |
+1. **Code Signing**: Using Apple Developer ID certificates to sign applications
+2. **Notarization**: Submitting signed applications to Apple for security scanning
+3. **Stapling**: Attaching notarization tickets to applications for offline verification
 
-### 🏗️ Building
-| Script | Purpose | Usage |
-|--------|---------|--------|
-| `build-briefcase-apps.sh` | Build applications using Briefcase | `./build-briefcase-apps.sh <platform> <signing_mode>` |
-| `build-python-package.sh` | Build Python package for PyPI | `./build-python-package.sh` |
+## Prerequisites
 
-### 📱 Platform Packaging
-| Script | Purpose | Usage |
-|--------|---------|--------|
-| `package-macos-apps.sh` | Create macOS DMG/PKG installers | `./package-macos-apps.sh <version> <build_type>` |
-| `package-linux-apps.sh` | Create Linux packages (DEB/TAR.GZ/AppImage) | `./package-linux-apps.sh <version> <build_type>` |
-| `package-windows-apps.sh` | Create Windows packages (ZIP/MSI) | `./package-windows-apps.sh <version> <build_type>` |
+- **Apple Developer Program membership** ($99/year)
+- **macOS development machine** with Xcode command line tools
+- **GitHub repository** with Actions enabled
 
-### 🔐 Code Signing
-| Script | Purpose | Usage |
-|--------|---------|--------|
-| `sign-and-notarize-macos.sh` | Sign and notarize macOS applications | `./sign-and-notarize-macos.sh <version> <build_type> <apple_id> <password> <team_id>` |
+## Required Certificates
 
-### 📊 Version and Metadata
-| Script | Purpose | Usage |
-|--------|---------|--------|
-| `extract-version.sh` | Extract version and set GitHub outputs | `./extract-version.sh [version_override]` |
-| `update-version.sh` | Update version across project files | `./update-version.sh <version_type>` |
-| `generate-build-summary.sh` | Generate build summaries for GitHub | `./generate-build-summary.sh <platform> <build_type> [version] [signing]` |
+For distributing macOS applications **outside the Mac App Store**, you need these specific certificates from the Apple Developer Portal:
 
-### ✅ Validation
-| Script | Purpose | Usage |
-|--------|---------|--------|
-| `validate-build-environment.sh` | Validate build environment setup | `./validate-build-environment.sh <platform>` |
-| `validate-project-structure.sh` | Validate project file structure | `./validate-project-structure.sh` |
-| `validate-refactoring.sh` | Validate workflow refactoring | `./validate-refactoring.sh` |
+### 🎯 Developer ID Application
+- **Purpose**: "This certificate is used to code sign your app for distribution outside of the Mac App Store Connect."
+- **Usage**: Signs .app bundles and DMG files
+- **Required**: Yes
 
-### 🚀 Release Management
-| Script | Purpose | Usage |
-|--------|---------|--------|
-| `prepare-release-artifacts.sh` | Organize release artifacts | `./prepare-release-artifacts.sh <version>` |
+### 🎯 Developer ID Installer  
+- **Purpose**: "This certificate is used to sign your app's Installer Package for distribution outside of the Mac App Store Connect."
+- **Usage**: Signs PKG installer packages
+- **Required**: Yes (for PKG installers)
 
-## 🎯 Quick Reference
+### ❌ Do NOT Use These Certificates
 
-### Common Workflows
+- **Apple Development** - For development only
+- **Apple Distribution** - For App Store distribution
+- **Mac App Distribution** - For Mac App Store submission
+- **Mac Installer Distribution** - For Mac App Store submission
 
-#### Development Setup
+## Quick Setup
+
+Run the interactive setup script:
+
 ```bash
-./setup-environment.sh
-./install-system-dependencies.sh linux
-./install-python-dependencies.sh development
+cd .github/scripts
+chmod +x setup-macos-signing.sh
+./setup-macos-signing.sh
 ```
 
-#### Local Build Testing
+This comprehensive script will guide you through:
+1. Apple Developer Program verification
+2. Certificate creation in Apple Developer Portal
+3. Certificate export from Keychain Access
+4. App-specific password creation
+5. GitHub secrets generation
+6. Security cleanup
+
+## Manual Setup (Step by Step)
+
+### Step 1: Access Apple Developer Portal
+
+Go to [Apple Developer Portal Certificates](https://developer.apple.com/account/resources/certificates/list)
+
+### Step 2: Create Certificate Signing Request (CSR)
+
+1. Open **Keychain Access**
+2. Menu: **Keychain Access** → **Certificate Assistant** → **Request a Certificate From a Certificate Authority**
+3. Fill in:
+   - **User Email Address**: Your Apple ID email
+   - **Common Name**: Your name or organization name
+   - **CA Email Address**: Leave blank
+   - **Request is**: ☑️ **Saved to disk**
+4. Click **Continue** and save as `CertificateSigningRequest.certSigningRequest`
+
+### Step 3: Create Developer ID Application Certificate
+
+1. In Apple Developer Portal, click **"+"** to create new certificate
+2. Under **Software** section, select:
+   - ☑️ **Developer ID Application**
+   - Description: "This certificate is used to code sign your app for distribution outside of the Mac App Store Connect."
+3. Click **Continue**
+4. Upload your CSR file
+5. Click **Continue** → **Download**
+6. **Double-click** the downloaded certificate to install in Keychain Access
+
+### Step 4: Create Developer ID Installer Certificate
+
+1. Click **"+"** again for second certificate
+2. Under **Software** section, select:
+   - ☑️ **Developer ID Installer**  
+   - Description: "This certificate is used to sign your app's Installer Package for distribution outside of the Mac App Store Connect."
+3. Click **Continue**
+4. Upload the **same CSR file**
+5. Download and install this certificate too
+
+### Step 5: Verify Certificates in Keychain
+
+Open **Keychain Access** and verify you have:
+- ✅ **Developer ID Application: [Your Name] ([Team ID])**
+- ✅ **Developer ID Installer: [Your Name] ([Team ID])**
+- ✅ Both certificates should have private keys (expandable with arrow)
+
+### Step 6: Export Certificates
+
+**For Developer ID Application:**
+1. In Keychain Access, find "Developer ID Application: [Your Name]"
+2. Expand to show certificate + private key
+3. Select **both items** (Cmd+click)
+4. Right-click → **Export 2 items...**
+5. Format: **Personal Information Exchange (.p12)**
+6. Save as: `app_cert.p12`
+7. Set a strong password
+
+**For Developer ID Installer:**
+1. Find "Developer ID Installer: [Your Name]"
+2. Export both certificate + private key as `installer_cert.p12`
+3. Use the **same password**
+
+### Step 7: Convert to Base64
+
 ```bash
-./validate-build-environment.sh linux
-./build-briefcase-apps.sh linux unsigned
-./package-linux-apps.sh 1.0.0 dev
+base64 -i app_cert.p12 > app_cert_base64.txt
+base64 -i installer_cert.p12 > installer_cert_base64.txt
 ```
 
-#### macOS Release Build
-```bash
-./install-system-dependencies.sh macos
-./install-python-dependencies.sh production
-./build-briefcase-apps.sh macos signed
-./sign-and-notarize-macos.sh 1.0.0 production $APPLE_ID $APPLE_PASSWORD $TEAM_ID
-./package-macos-apps.sh 1.0.0 production
+### Step 8: Create App-Specific Password
+
+1. Go to [Apple ID Account](https://appleid.apple.com/)
+2. Sign in → **Security** section
+3. **App-Specific Passwords** → **Generate Password...**
+4. Label: "R2MIDI macOS Notarization"
+5. Copy the generated password (format: `xxxx-xxxx-xxxx-xxxx`)
+
+### Step 9: Find Your Team ID
+
+1. Go to [Apple Developer Membership](https://developer.apple.com/account/#!/membership/)
+2. Find **Team ID** (10-character alphanumeric string like `ABC123DEFG`)
+
+### Step 10: Setup GitHub Secrets
+
+Add these secrets to your repository (**Settings** → **Secrets and variables** → **Actions**):
+
+| Secret Name | Description | Value |
+|-------------|-------------|-------|
+| `APPLE_DEVELOPER_ID_APPLICATION_CERT` | Base64 content of app_cert.p12 | `[base64 string]` |
+| `APPLE_DEVELOPER_ID_INSTALLER_CERT` | Base64 content of installer_cert.p12 | `[base64 string]` |
+| `APPLE_CERT_PASSWORD` | Password for both P12 certificates | `[your password]` |
+| `APPLE_ID` | Your Apple ID email | `[your email]` |
+| `APPLE_ID_PASSWORD` | App-specific password | `[xxxx-xxxx-xxxx-xxxx]` |
+| `APPLE_TEAM_ID` | Your Apple Developer Team ID | `[ABC123DEFG]` |
+
+## Scripts Overview
+
+### setup-certificates.sh
+
+Handles certificate import and keychain setup:
+- ✅ Supports both individual certificates and combined P12 format  
+- ✅ Validates certificates before import
+- ✅ Creates temporary keychain for CI/CD
+- ✅ Exports signing identities for other scripts
+
+### sign-and-notarize-macos.sh
+
+Performs signing and notarization:
+- ✅ Inside-out signing approach (libraries → frameworks → apps)
+- ✅ Creates both DMG and PKG installers
+- ✅ Submits to Apple Notary Service with xcrun notarytool
+- ✅ Staples notarization tickets
+- ✅ Comprehensive verification and Gatekeeper testing
+
+### package-macos-apps.sh
+
+Organizes final distribution packages:
+- ✅ Verifies signed and notarized packages
+- ✅ Creates universal distribution bundles
+- ✅ Generates checksums and manifests
+- ✅ Creates installation documentation
+
+## GitHub Actions Workflow
+
+The updated workflow (`build-macos.yml`) supports both certificate formats and includes proper validation:
+
+```yaml
+- name: Setup Apple Developer certificates
+  env:
+    APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
+    APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
+    APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+  run: ./.github/scripts/setup-certificates.sh
+
+- name: Sign and notarize applications
+  env:
+    APPLE_ID: ${{ secrets.APPLE_ID }}
+    APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+    APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+  run: |
+    ./.github/scripts/sign-and-notarize-macos.sh \
+      "${{ steps.version.outputs.version }}" \
+      "${{ inputs.build-type }}" \
+      "${{ secrets.APPLE_ID }}" \
+      "${{ secrets.APPLE_ID_PASSWORD }}" \
+      "${{ secrets.APPLE_TEAM_ID }}"
 ```
 
-#### Python Package Release
-```bash
-./install-python-dependencies.sh package
-./build-python-package.sh
+## Troubleshooting
+
+### "SecKeychainItemImport: One or more parameters passed to a function were not valid"
+
+**Cause**: Certificate environment variables are empty or certificates are invalid.
+
+**Solutions**:
+1. Verify all 6 GitHub secrets are set correctly
+2. Check certificate files are not corrupted (re-export if needed)
+3. Ensure certificate password matches the P12 files
+4. Confirm base64 encoding has no extra whitespace
+
+### Certificate Import Failures
+
+**Cause**: Issues with P12 format or keychain access.
+
+**Solutions**:
+1. Re-export certificates ensuring both certificate + private key are selected
+2. Use the same password for both P12 files
+3. Verify certificates are "Developer ID" type (not Apple Development/Distribution)
+
+### Notarization Failures
+
+**Common causes**:
+- Invalid entitlements for hardened runtime
+- Incorrect Apple ID credentials
+- Missing or expired app-specific password
+- App contains prohibited content
+
+**Solutions**:
+1. Check entitlements match app requirements
+2. Regenerate app-specific password
+3. Verify Apple ID and Team ID are correct
+4. Review notarization logs for specific issues
+
+### Gatekeeper Assessment Failed
+
+**Cause**: App not properly signed/notarized or Gatekeeper policies.
+
+**Solutions**:
+1. Ensure Developer ID certificates (not development certificates)
+2. Verify notarization completed successfully
+3. Check notarization ticket is stapled
+4. Test on clean macOS system
+
+## Security Best Practices
+
+1. **Certificate Security**:
+   - Use strong passwords for P12 exports
+   - Delete P12 files after GitHub setup
+   - Store certificates only in trusted keychains
+
+2. **Credential Management**:
+   - Rotate app-specific passwords regularly
+   - Use unique passwords for each project
+   - Monitor certificate expiration dates
+
+3. **Repository Security**:
+   - Limit repository access to trusted collaborators
+   - Use branch protection rules
+   - Review changes to signing scripts
+
+## File Structure
+
+```
+.github/scripts/
+├── setup-certificates.sh       # Certificate import and keychain setup
+├── sign-and-notarize-macos.sh  # Main signing and notarization
+├── package-macos-apps.sh       # Final packaging and organization
+├── setup-macos-signing.sh      # Interactive setup helper
+└── README.md                   # This documentation
 ```
 
-## 📝 Script Parameters
+## Expected Output
 
-### Platform Values
-- `linux` - Linux distributions (Ubuntu, Debian, etc.)
-- `macos` - macOS (Darwin)
-- `windows` - Windows
+After successful setup, your builds will produce:
 
-### Build Types
-- `production` - Full production dependencies
-- `development` - Development tools + production deps
-- `testing` - Minimal testing dependencies
-- `ci` - All CI/CD tools including security scanners
-- `package` - Only packaging tools
+### DMG Files (Drag-and-Drop Installers)
+- `R2MIDI-Server-[version].dmg` - Signed and notarized
+- `R2MIDI-Client-[version].dmg` - Signed and notarized
 
-### Signing Modes
-- `signed` - Code signed (macOS only)
-- `unsigned` - No code signing
+### PKG Files (Automated Installers)
+- `R2MIDI-Server-[version].pkg` - Signed and notarized
+- `R2MIDI-Client-[version].pkg` - Signed and notarized
 
-### Version Types
-- `major` - Increment major version (x.0.0)
-- `minor` - Increment minor version (x.y.0) 
-- `patch` - Increment patch version (x.y.z)
-- `none` - No version change
+### Distribution Bundle
+- `R2MIDI-Complete-[version]-macOS.zip` - Complete package with documentation
 
-## 🔍 Script Standards
+### Verification Files
+- `CHECKSUMS.txt` - SHA256 checksums
+- `SIGNING_REPORT.txt` - Detailed signing information
+- `PACKAGE_MANIFEST.txt` - Package details and verification
 
-All scripts follow these conventions:
+## Verification Commands
 
-### Safety
+Test your setup locally:
+
 ```bash
-#!/bin/bash
-set -euo pipefail  # Exit on error, undefined vars, pipe failures
+# Check available certificates
+security find-identity -v -p codesigning
+
+# Verify app signature
+codesign --verify --deep --strict --verbose=2 YourApp.app
+
+# Check Gatekeeper compatibility
+spctl --assess --type exec --verbose YourApp.app
+
+# Verify notarization and stapling
+xcrun stapler validate YourApp.dmg
+spctl --assess --type install --verbose YourApp.dmg
 ```
 
-### Error Handling
-- Proper exit codes (0 = success, non-zero = error)
-- Descriptive error messages
-- Graceful degradation where possible
+## Support
 
-### Logging
-- Emoji prefixes for readability (🔧 🍎 🐧 🪟 ✅ ❌)
-- Consistent output format
-- Progress indicators for long operations
+If you encounter issues:
 
-### Documentation
-- Usage comments at the top
-- Parameter descriptions
-- Example usage
+1. **Run the interactive setup script** - it handles most common problems
+2. **Check GitHub Actions logs** for detailed error messages
+3. **Verify all secrets** are set correctly in repository settings
+4. **Test certificates locally** using verification commands
+5. **Review Apple's documentation** for certificate and notarization requirements
 
-## 🛠️ Development Guidelines
+## Apple Documentation References
 
-### Adding New Scripts
-1. Use the standard template:
-```bash
-#!/bin/bash
-set -euo pipefail
-
-# Description of what the script does
-# Usage: script-name.sh <required_param> [optional_param]
-
-PARAM="${1:-default_value}"
-echo "🔧 Starting operation..."
-
-# Script logic here
-
-echo "✅ Operation complete!"
-```
-
-2. Make executable: `chmod +x script-name.sh`
-3. Test locally before committing
-4. Update this README
-
-### Modifying Existing Scripts
-1. Test changes locally first
-2. Maintain backward compatibility
-3. Update documentation if parameters change
-4. Run `validate-refactoring.sh` to verify
-
-### Testing Scripts
-```bash
-# Syntax check
-bash -n script-name.sh
-
-# Dry run (if supported)
-./script-name.sh --dry-run
-
-# Full validation
-./validate-refactoring.sh
-```
-
-## 🔧 Troubleshooting
-
-### Common Issues
-
-#### Permission Denied
-```bash
-./make-scripts-executable.sh
-```
-
-#### Script Not Found
-```bash
-# Check if you're in the project root
-pwd
-ls .github/scripts/
-```
-
-#### Environment Issues
-```bash
-./validate-build-environment.sh $(uname -s | tr '[:upper:]' '[:lower:]')
-```
-
-#### Version Extraction Fails
-```bash
-# Check if server/version.py exists and has correct format
-grep '__version__' server/version.py
-```
-
-### Debug Mode
-Most scripts support verbose output:
-```bash
-bash -x ./script-name.sh  # Trace execution
-```
-
-## 📊 Dependencies
-
-### System Requirements
-- **Bash** 4.0+ (for associative arrays)
-- **Git** (for version management)
-- **Python** 3.9+ (for builds)
-
-### Platform Tools
-- **Linux**: apt/yum/pacman package managers
-- **macOS**: Xcode Command Line Tools, optional Homebrew
-- **Windows**: No additional requirements
-
-## 🧹 Cleanup and Maintenance
-
-### Recent Cleanup (December 2024)
-Removed redundant scripts that were not used in any workflows:
-- `setup-clean-workflows.sh` - Redundant setup functionality
-- `setup-workflows.sh` - Duplicate of above
-- `setup-scripts.sh` - Functionality covered by `make-scripts-executable.sh`
-
-### Manual Cleanup Commands
-```bash
-# Remove any remaining redundant files
-rm -f .github/scripts/*.backup
-rm -f .github/scripts/setup-clean-workflows.sh
-rm -f .github/scripts/setup-workflows.sh
-```
-
-### Script Categories
-- **Production Scripts (15)**: Used directly in GitHub Actions workflows
-- **Utility Scripts (4)**: For development, testing, and maintenance
-- **Documentation (1)**: This README file
-
-## 📚 References
-
-- [Bash Best Practices](https://bertvv.github.io/cheat-sheets/Bash.html)
-- [GitHub Actions Scripts](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions)
-- [Briefcase Documentation](https://briefcase.readthedocs.io/)
+- [Notarizing macOS Software](https://developer.apple.com/documentation/security/notarizing_macos_software_before_distribution)
+- [Developer ID Certificates](https://developer.apple.com/support/certificates/)
+- [Code Signing Guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/)
+- [Gatekeeper and App Notarization](https://developer.apple.com/documentation/security/gatekeeper)
 
 ---
 
-*Scripts version: 4.0 (Cleaned and optimized)*  
-*Total scripts: 19 (15 production + 4 utility)*  
-*Last updated: December 2024*
+**🎯 Remember**: These certificates are specifically for **distribution outside the Mac App Store**. If you later want to distribute through the Mac App Store, you'll need different certificates (Mac App Distribution and Mac Installer Distribution).

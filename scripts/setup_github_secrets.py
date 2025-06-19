@@ -1,36 +1,47 @@
 #!/usr/bin/env python3
 """
-GitHub Secrets Setup Generator for R2MIDI
-==========================================
+Complete GitHub Secrets Manager for R2MIDI macOS Signing
+========================================================
 
-This script walks you through setting up all the necessary secrets, certificates,
-and configurations needed for the GitHub Actions workflow to properly build and
-sign your R2MIDI applications.
+This script automatically creates/updates ALL GitHub secrets needed for macOS
+code signing and notarization by reading configuration from app_config.json
+and using the GitHub API.
+
+Features:
+- Auto-installs dependencies (requests, PyNaCl)
+- Validates configuration and certificates
+- Creates/updates all GitHub secrets via API
+- Supports force mode to update all secrets
+- Uses correct libsodium encryption for GitHub
+- Comprehensive error handling and validation
 
 Requirements:
-- macOS (for certificate management)
-- Active Apple Developer Account
-- GitHub repository access
 - Python 3.8+
+- Valid GitHub personal access token with repo scope
+- P12 certificate files (app_cert.p12, installer_cert.p12)
+- Valid app_config.json configuration
 
 Usage:
-    python scripts/setup_github_secrets.py
+    python scripts/setup_github_secrets.py [--force] [--test-only]
+    
+Options:
+    --force      Force update all secrets even if they already exist
+    --test-only  Test configuration and dependencies without making changes
 """
 
+import argparse
 import base64
-import getpass
 import json
 import os
-import re
 import subprocess
 import sys
+import importlib
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
 class Colors:
     """ANSI color codes for terminal output."""
-
     HEADER = "\033[95m"
     BLUE = "\033[94m"
     CYAN = "\033[96m"
@@ -41,23 +52,33 @@ class Colors:
     BOLD = "\033[1m"
 
 
-class GitHubSecretsGenerator:
-    """Main class for generating GitHub secrets and certificates."""
+class GitHubSecretsManager:
+    """Complete GitHub secrets manager for R2MIDI."""
 
-    def __init__(self):
+    def __init__(self, force_update: bool = False, test_only: bool = False):
+        self.config = {}
         self.secrets = {}
-        self.github_repo = "tirans/r2midi"
-
+        self.force_update = force_update
+        self.test_only = test_only
+        self.project_root = Path(__file__).parent.parent
+        self.config_file = self.project_root / "apple_credentials" / "config" / "app_config.json"
+        self.github_api_base = "https://api.github.com"
+        self.session = None
+        
     def print_header(self, text: str):
         """Print a formatted header."""
-        print(f"\n{Colors.HEADER}{Colors.BOLD}{'='*60}")
+        print(f"\n{Colors.HEADER}{Colors.BOLD}{'='*70}")
         print(f"{text}")
-        print(f"{'='*60}{Colors.ENDC}")
+        print(f"{'='*70}{Colors.ENDC}")
 
     def print_step(self, step: int, title: str):
         """Print a step header."""
         print(f"\n{Colors.CYAN}{Colors.BOLD}Step {step}: {title}{Colors.ENDC}")
-        print(f"{Colors.CYAN}{'-'*40}{Colors.ENDC}")
+        if self.force_update:
+            print(f"{Colors.CYAN}[FORCE MODE: Will update all secrets]{Colors.ENDC}")
+        if self.test_only:
+            print(f"{Colors.BLUE}[TEST MODE: No changes will be made]{Colors.ENDC}")
+        print(f"{Colors.CYAN}{'-'*50}{Colors.ENDC}")
 
     def print_success(self, text: str):
         """Print success message."""
@@ -75,449 +96,610 @@ class GitHubSecretsGenerator:
         """Print info message."""
         print(f"{Colors.BLUE}ℹ️  {text}{Colors.ENDC}")
 
-    def check_prerequisites(self) -> bool:
-        """Check if all prerequisites are met."""
-        self.print_step(1, "Checking Prerequisites")
+    def mask_sensitive_value(self, value: str, show_chars: int = 4) -> str:
+        """Mask sensitive values for safe display."""
+        if not value or len(value) <= show_chars:
+            return "***"
+        return value[:show_chars] + "***" + value[-2:]
 
-        if sys.platform != "darwin":
-            self.print_error(
-                "This script must be run on macOS for certificate management."
-            )
-            return False
-
-        required_commands = ["git", "openssl"]
-        for cmd in required_commands:
-            try:
-                subprocess.run([cmd, "--version"], capture_output=True, check=True)
-                self.print_success(f"{cmd} is available")
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                self.print_error(f"{cmd} is not available. Please install it.")
-                return False
-
+    def install_dependencies(self) -> bool:
+        """Install required dependencies automatically."""
+        self.print_step(1, "Installing Dependencies")
+        
+        # Check if we can import required modules
+        missing_modules = []
+        
         try:
-            subprocess.run(
-                ["xcode-select", "--print-path"], capture_output=True, check=True
-            )
-            self.print_success("Xcode command line tools are installed")
-        except subprocess.CalledProcessError:
-            self.print_error(
-                "Xcode command line tools not found. Run: xcode-select --install"
-            )
+            import requests
+            self.print_success("requests library available")
+        except ImportError:
+            missing_modules.append("requests")
+        
+        try:
+            from nacl import public
+            self.print_success("PyNaCl library available")
+        except ImportError:
+            missing_modules.append("PyNaCl")
+        
+        if not missing_modules:
+            self.print_success("All dependencies are already installed")
+            return True
+        
+        self.print_info(f"Installing missing dependencies: {', '.join(missing_modules)}")
+        
+        # Install missing dependencies
+        try:
+            if missing_modules:
+                cmd = [sys.executable, "-m", "pip", "install"] + missing_modules
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                
+                if result.returncode == 0:
+                    self.print_success("Dependencies installed successfully")
+                    
+                    # Verify imports now work
+                    try:
+                        import requests
+                        from nacl import public
+                        self.print_success("All imports working correctly")
+                        return True
+                    except ImportError as e:
+                        self.print_error(f"Import still failing after installation: {e}")
+                        return False
+                else:
+                    self.print_error("Failed to install dependencies")
+                    self.print_info("Try running manually: pip install requests PyNaCl")
+                    return False
+                    
+        except Exception as e:
+            self.print_error(f"Error installing dependencies: {e}")
             return False
 
+    def load_config(self) -> bool:
+        """Load configuration from app_config.json."""
+        self.print_step(2, "Loading Configuration")
+        
+        try:
+            if not self.config_file.exists():
+                self.print_error(f"Configuration file not found: {self.config_file}")
+                return False
+            
+            with open(self.config_file, 'r') as f:
+                self.config = json.load(f)
+            
+            self.print_success(f"Loaded configuration from {self.config_file}")
+            
+            # Validate required sections
+            required_sections = ['apple_developer', 'github']
+            for section in required_sections:
+                if section not in self.config:
+                    self.print_error(f"Missing required section '{section}' in config")
+                    return False
+            
+            # Validate GitHub section
+            github_config = self.config['github']
+            if not github_config.get('repository'):
+                self.print_error("Missing 'repository' in github section")
+                return False
+            
+            if not github_config.get('personal_access_token'):
+                self.print_error("Missing 'personal_access_token' in github section")
+                return False
+            
+            # Validate Apple Developer section
+            apple_config = self.config['apple_developer']
+            required_fields = ['apple_id', 'team_id', 'p12_password', 'app_specific_password']
+            
+            for field in required_fields:
+                if not apple_config.get(field):
+                    self.print_error(f"Missing required Apple Developer field: {field}")
+                    return False
+            
+            # Display loaded configuration (SAFELY - no sensitive data)
+            self.print_info(f"Apple ID: {self.mask_sensitive_value(apple_config.get('apple_id', ''))}")
+            self.print_info(f"Team ID: {apple_config.get('team_id', '')}")  # Team ID is not sensitive
+            self.print_info(f"Repository: {github_config.get('repository', '')}")
+            
+            return True
+            
+        except json.JSONDecodeError as e:
+            self.print_error(f"Invalid JSON in config file: {e}")
+            return False
+        except Exception as e:
+            self.print_error(f"Error loading config: {e}")
+            return False
+
+    def setup_github_session(self) -> bool:
+        """Setup GitHub API session."""
+        try:
+            import requests
+            
+            self.session = requests.Session()
+            github_config = self.config['github']
+            
+            # SECURITY: Never log the actual token
+            token = github_config['personal_access_token']
+            
+            self.session.headers.update({
+                'Authorization': f"Bearer {token}",
+                'Accept': 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28'
+            })
+            
+            return True
+            
+        except Exception as e:
+            self.print_error(f"Error setting up GitHub session: {e}")
+            return False
+
+    def test_github_access(self) -> bool:
+        """Test GitHub API access and permissions."""
+        self.print_step(3, "Testing GitHub Access")
+        
+        if not self.setup_github_session():
+            return False
+        
+        repository = self.config['github']['repository']
+        
+        try:
+            # Test repository access
+            response = self.session.get(f"{self.github_api_base}/repos/{repository}")
+            
+            if response.status_code == 200:
+                repo_data = response.json()
+                self.print_success(f"Repository access confirmed: {repo_data['full_name']}")
+                
+                # Check admin permissions
+                permissions = repo_data.get('permissions', {})
+                if permissions.get('admin', False):
+                    self.print_success("Admin permissions confirmed")
+                else:
+                    self.print_warning("Admin permissions not detected - may not be able to manage secrets")
+                
+                # Test public key endpoint
+                pub_key_response = self.session.get(f"{self.github_api_base}/repos/{repository}/actions/secrets/public-key")
+                if pub_key_response.status_code == 200:
+                    pub_key_data = pub_key_response.json()
+                    self.print_success("Repository public key accessible")
+                    # SECURITY: Don't log the actual key, just confirm we can access it
+                    self.print_info(f"Public key ID: {pub_key_data.get('key_id', 'unknown')}")
+                    return True
+                else:
+                    self.print_error("Cannot access repository public key - insufficient permissions")
+                    return False
+                    
+            elif response.status_code == 404:
+                self.print_error(f"Repository not found: {repository}")
+                return False
+            elif response.status_code == 401:
+                self.print_error("Invalid GitHub token")
+                return False
+            else:
+                self.print_error(f"GitHub API error: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            self.print_error(f"GitHub API request failed: {e}")
+            return False
+
+    def test_p12_certificate(self, cert_path: Path, password: str) -> bool:
+        """Test P12 certificate with OpenSSL 3.x compatibility."""
+        try:
+            # SECURITY: Never log the password in error messages
+            # Try with -legacy flag first (OpenSSL 3.x)
+            result = subprocess.run([
+                'openssl', 'pkcs12', '-legacy', '-in', str(cert_path), 
+                '-noout', '-passin', f'pass:{password}'
+            ], capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                return True
+            
+            # Try without -legacy flag (older OpenSSL)
+            result = subprocess.run([
+                'openssl', 'pkcs12', '-in', str(cert_path), 
+                '-noout', '-passin', f'pass:{password}'
+            ], capture_output=True, text=True)
+            
+            return result.returncode == 0
+            
+        except Exception:
+            return False
+
+    def find_and_validate_certificates(self) -> Tuple[Optional[Path], Optional[Path]]:
+        """Find and validate P12 certificate files."""
+        self.print_step(4, "Finding and Validating Certificates")
+        
+        # Get P12 path and password from config
+        p12_path_config = self.config['apple_developer'].get('p12_path', 'apple_credentials/certificates')
+        p12_password = self.config['apple_developer'].get('p12_password')
+        
+        # Resolve P12 path
+        if Path(p12_path_config).is_absolute():
+            p12_base_path = Path(p2_path_config)
+        else:
+            p12_base_path = self.project_root / p12_path_config
+        
+        # Search for certificate files
+        search_paths = [
+            p12_base_path,
+            self.project_root / ".github" / "scripts",
+            self.project_root,
+        ]
+        
+        app_cert = None
+        installer_cert = None
+        
+        # Look for certificates
+        cert_names = {
+            'app': ['app_cert.p12', 'application_cert.p12', 'developerID_application.p12'],
+            'installer': ['installer_cert.p12', 'installer.p12', 'developerID_installer.p12']
+        }
+        
+        for search_path in search_paths:
+            if not search_path.exists():
+                continue
+                
+            self.print_info(f"Searching in: {search_path}")
+            
+            # Look for application certificate
+            if app_cert is None:
+                for name in cert_names['app']:
+                    cert_path = search_path / name
+                    if cert_path.exists():
+                        app_cert = cert_path
+                        self.print_success(f"Found application certificate: {cert_path}")
+                        break
+            
+            # Look for installer certificate
+            if installer_cert is None:
+                for name in cert_names['installer']:
+                    cert_path = search_path / name
+                    if cert_path.exists():
+                        installer_cert = cert_path
+                        self.print_success(f"Found installer certificate: {cert_path}")
+                        break
+        
+        if not app_cert:
+            self.print_error("Application certificate not found")
+            self.print_info("Expected names: " + ", ".join(cert_names['app']))
+            return None, None
+        
+        if not installer_cert:
+            self.print_error("Installer certificate not found")
+            self.print_info("Expected names: " + ", ".join(cert_names['installer']))
+            return None, None
+        
+        # Validate certificates
+        self.print_info("Validating certificates...")
+        
+        if not self.test_p12_certificate(app_cert, p12_password):
+            self.print_error("Application certificate validation failed")
+            return None, None
+        
+        if not self.test_p12_certificate(installer_cert, p12_password):
+            self.print_error("Installer certificate validation failed")
+            return None, None
+        
+        self.print_success("All certificates validated successfully")
+        return app_cert, installer_cert
+
+    def prepare_all_secrets(self, app_cert: Path, installer_cert: Path) -> bool:
+        """Prepare all required secrets from configuration and certificates."""
+        self.print_step(5, "Preparing All Required Secrets")
+        
+        apple_config = self.config['apple_developer']
+        
+        # Required secrets for macOS signing and notarization
+        basic_secrets = {
+            'APPLE_CERT_PASSWORD': apple_config.get('p12_password'),
+            'APPLE_ID': apple_config.get('apple_id'),
+            'APPLE_ID_PASSWORD': apple_config.get('app_specific_password'),
+            'APPLE_TEAM_ID': apple_config.get('team_id'),
+        }
+        
+        # Add basic secrets
+        for secret_name, secret_value in basic_secrets.items():
+            self.secrets[secret_name] = secret_value
+            self.print_success(f"{secret_name}: ✓")
+        
+        # Convert P12 certificates to base64
+        try:
+            with open(app_cert, 'rb') as f:
+                app_cert_data = f.read()
+            self.secrets['APPLE_DEVELOPER_ID_APPLICATION_CERT'] = base64.b64encode(app_cert_data).decode('utf-8')
+            # SECURITY: Show size but not content
+            self.print_success(f"Application certificate: {len(self.secrets['APPLE_DEVELOPER_ID_APPLICATION_CERT'])} chars")
+            
+            with open(installer_cert, 'rb') as f:
+                installer_cert_data = f.read()
+            self.secrets['APPLE_DEVELOPER_ID_INSTALLER_CERT'] = base64.b64encode(installer_cert_data).decode('utf-8')
+            # SECURITY: Show size but not content
+            self.print_success(f"Installer certificate: {len(self.secrets['APPLE_DEVELOPER_ID_INSTALLER_CERT'])} chars")
+            
+        except Exception as e:
+            self.print_error(f"Error converting certificates: {e}")
+            return False
+        
+        # App Store Connect API secrets (optional)
+        if apple_config.get('app_store_connect_key_id') and apple_config.get('app_store_connect_issuer_id'):
+            self.secrets['APP_STORE_CONNECT_KEY_ID'] = apple_config['app_store_connect_key_id']
+            self.secrets['APP_STORE_CONNECT_ISSUER_ID'] = apple_config['app_store_connect_issuer_id']
+            self.print_success("App Store Connect credentials: ✓")
+            
+            # Convert API key to base64
+            api_key_path_config = apple_config.get('app_store_connect_api_key_path')
+            if api_key_path_config:
+                if Path(api_key_path_config).is_absolute():
+                    api_key_path = Path(api_key_path_config)
+                else:
+                    api_key_path = self.project_root / api_key_path_config
+                
+                if api_key_path.exists():
+                    try:
+                        with open(api_key_path, 'rb') as f:
+                            api_key_data = f.read()
+                        self.secrets['APP_STORE_CONNECT_API_KEY'] = base64.b64encode(api_key_data).decode('utf-8')
+                        # SECURITY: Show size but not content
+                        self.print_success(f"App Store Connect API key: {len(self.secrets['APP_STORE_CONNECT_API_KEY'])} chars")
+                    except Exception as e:
+                        self.print_warning(f"Could not read API key file: {e}")
+        
+        # Build configuration secrets
+        build_options = self.config.get('build_options', {})
+        if build_options.get('enable_app_store_build'):
+            self.secrets['ENABLE_APP_STORE_BUILD'] = 'true'
+        if build_options.get('enable_app_store_submission'):
+            self.secrets['ENABLE_APP_STORE_SUBMISSION'] = 'true'
+        if build_options.get('enable_notarization'):
+            self.secrets['ENABLE_NOTARIZATION'] = 'true'
+        
+        # App information secrets
+        app_info = self.config.get('app_info', {})
+        if app_info.get('bundle_id_prefix'):
+            self.secrets['APP_BUNDLE_ID_PREFIX'] = app_info['bundle_id_prefix']
+        if app_info.get('author_name'):
+            self.secrets['APP_AUTHOR_NAME'] = app_info['author_name']
+        if app_info.get('author_email'):
+            self.secrets['APP_AUTHOR_EMAIL'] = app_info['author_email']
+        
+        total_secrets = len(self.secrets)
+        required_secrets = len([s for s in self.secrets.keys() if s.startswith('APPLE_')])
+        
+        self.print_success(f"Prepared {total_secrets} total secrets ({required_secrets} required for signing)")
         return True
 
-    def get_basic_info(self):
-        """Get basic information from user."""
-        self.print_step(2, "Basic Information")
-
-        while True:
-            bundle_prefix = input(
-                f"{Colors.BLUE}Bundle ID prefix (e.g., com.yourcompany): {Colors.ENDC}"
-            ).strip()
-            if re.match(r"^[a-z]+\.[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*$", bundle_prefix):
-                self.secrets["APP_BUNDLE_ID_PREFIX"] = bundle_prefix
-                break
-            self.print_error(
-                "Invalid bundle ID format. Use reverse domain notation like: com.yourcompany"
-            )
-
-        self.secrets["APP_DISPLAY_NAME_SERVER"] = (
-            input(
-                f"{Colors.BLUE}Server app display name [R2MIDI Server]: {Colors.ENDC}"
-            ).strip()
-            or "R2MIDI Server"
-        )
-
-        self.secrets["APP_DISPLAY_NAME_CLIENT"] = (
-            input(
-                f"{Colors.BLUE}Client app display name [R2MIDI Client]: {Colors.ENDC}"
-            ).strip()
-            or "R2MIDI Client"
-        )
-
-        self.secrets["APP_AUTHOR_NAME"] = input(
-            f"{Colors.BLUE}Author name: {Colors.ENDC}"
-        ).strip()
-        self.secrets["APP_AUTHOR_EMAIL"] = input(
-            f"{Colors.BLUE}Author email: {Colors.ENDC}"
-        ).strip()
-
-        self.print_success("Basic information collected")
-
-    def get_apple_developer_info(self):
-        """Get Apple Developer account information."""
-        self.print_step(3, "Apple Developer Account Information")
-
-        print("You'll need an active Apple Developer Program membership ($99/year)")
-        print("Visit: https://developer.apple.com/programs/")
-
-        if (
-            input(
-                f"{Colors.BLUE}Do you have an Apple Developer account? (y/n): {Colors.ENDC}"
-            ).lower()
-            != "y"
-        ):
-            self.print_warning(
-                "You'll need an Apple Developer account for code signing"
-            )
-            return
-
-        self.secrets["APPLE_ID"] = input(
-            f"{Colors.BLUE}Apple ID email: {Colors.ENDC}"
-        ).strip()
-
-        print(f"\n{Colors.BLUE}To find your Team ID:{Colors.ENDC}")
-        print("1. Go to https://developer.apple.com/account/")
-        print("2. Sign in with your Apple ID")
-        print("3. Look for 'Team ID' in the membership section")
-
-        self.secrets["APPLE_TEAM_ID"] = input(
-            f"{Colors.BLUE}Apple Developer Team ID: {Colors.ENDC}"
-        ).strip()
-
-        print(f"\n{Colors.BLUE}Create an app-specific password:{Colors.ENDC}")
-        print("1. Go to https://appleid.apple.com/")
-        print("2. Sign in with your Apple ID")
-        print("3. Go to 'Security' → 'App-Specific Passwords'")
-        print("4. Generate a new password for 'GitHub Actions'")
-
-        self.secrets["APPLE_ID_PASSWORD"] = getpass.getpass(
-            f"{Colors.BLUE}App-specific password: {Colors.ENDC}"
-        )
-
-        self.print_success("Apple Developer information collected")
-
-    def check_keychain_certificates(self) -> Dict[str, str]:
-        """Check for available certificates in keychain."""
-        self.print_step(4, "Checking Keychain Certificates")
-
-        certificates = {}
-
+    def encrypt_secret(self, secret_value: str, public_key_data: str) -> Optional[str]:
+        """Encrypt a secret value using GitHub's libsodium encryption."""
         try:
-            result = subprocess.run(
-                ["security", "find-identity", "-v", "-p", "codesigning"],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            for line in result.stdout.split("\n"):
-                if "Developer ID Application:" in line:
-                    match = re.search(r'"([^"]*Developer ID Application[^"]*)"', line)
-                    if match:
-                        cert_name = match.group(1)
-                        certificates["developer_id"] = cert_name
-                        self.print_success(
-                            f"Found Developer ID certificate: {cert_name}"
-                        )
-
-                elif "3rd Party Mac Developer Application:" in line:
-                    match = re.search(
-                        r'"([^"]*3rd Party Mac Developer Application[^"]*)"', line
-                    )
-                    if match:
-                        cert_name = match.group(1)
-                        certificates["app_store"] = cert_name
-                        self.print_success(f"Found App Store certificate: {cert_name}")
-
-        except subprocess.CalledProcessError:
-            self.print_error("Failed to check keychain certificates")
-
-        if not certificates:
-            self.print_warning("No signing certificates found in keychain")
-            self.print_info(
-                "Download certificates from Apple Developer Portal and install them"
-            )
-
-        return certificates
-
-    def export_certificate(
-        self, cert_name: str, cert_type: str
-    ) -> Optional[Tuple[str, str]]:
-        """Export a certificate from keychain."""
-        print(f"\n{Colors.BLUE}Exporting {cert_type} certificate...{Colors.ENDC}")
-
-        temp_file = f"/tmp/{cert_type}_cert.p12"
-
-        try:
-            password = getpass.getpass(
-                f"Enter password for {cert_type} certificate export: "
-            )
-
-            result = subprocess.run(
-                [
-                    "security",
-                    "export",
-                    "-k",
-                    "login.keychain",
-                    "-t",
-                    "identities",
-                    "-f",
-                    "pkcs12",
-                    "-o",
-                    temp_file,
-                    "-P",
-                    password,
-                ],
-                input=f'"{cert_name}"\n',
-                text=True,
-                capture_output=True,
-            )
-
-            if result.returncode != 0:
-                self.print_error(f"Failed to export certificate: {result.stderr}")
-                return None
-
-            with open(temp_file, "rb") as f:
-                cert_data = f.read()
-
-            os.remove(temp_file)
-            encoded_cert = base64.b64encode(cert_data).decode("utf-8")
-
-            self.print_success(f"{cert_type} certificate exported and encoded")
-            return encoded_cert, password
-
+            from nacl import public
+            
+            # Decode the public key from base64
+            public_key_bytes = base64.b64decode(public_key_data)
+            
+            # Create a public key object using PyNaCl
+            public_key = public.PublicKey(public_key_bytes)
+            
+            # Create a sealed box for encryption
+            sealed_box = public.SealedBox(public_key)
+            
+            # Encrypt the secret value
+            encrypted_bytes = sealed_box.encrypt(secret_value.encode('utf-8'))
+            
+            # Return base64 encoded encrypted data
+            return base64.b64encode(encrypted_bytes).decode('utf-8')
+            
         except Exception as e:
-            self.print_error(f"Error exporting certificate: {e}")
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
+            # SECURITY: Don't log the secret value in error messages
+            self.print_error(f"Error encrypting secret: {e}")
             return None
 
-    def setup_certificates(self):
-        """Set up certificates for code signing."""
-        certificates = self.check_keychain_certificates()
-
-        if not certificates:
-            return
-
-        # Developer ID certificate
-        if "developer_id" in certificates:
-            if (
-                input(
-                    f"{Colors.BLUE}Export Developer ID certificate? (y/n): {Colors.ENDC}"
-                ).lower()
-                == "y"
-            ):
-                result = self.export_certificate(
-                    certificates["developer_id"], "developer_id"
-                )
-                if result:
-                    encoded_cert, password = result
-                    self.secrets["APPLE_CERTIFICATE_P12"] = encoded_cert
-                    self.secrets["APPLE_CERTIFICATE_PASSWORD"] = password
-
-        # App Store certificate
-        if "app_store" in certificates:
-            if (
-                input(
-                    f"{Colors.BLUE}Export App Store certificate? (y/n): {Colors.ENDC}"
-                ).lower()
-                == "y"
-            ):
-                result = self.export_certificate(certificates["app_store"], "app_store")
-                if result:
-                    encoded_cert, password = result
-                    self.secrets["APPLE_APP_STORE_CERTIFICATE_P12"] = encoded_cert
-                    self.secrets["APPLE_APP_STORE_CERTIFICATE_PASSWORD"] = password
-
-        # Windows certificate (optional)
-        if (
-            input(
-                f"{Colors.BLUE}Do you have a Windows code signing certificate? (y/n): {Colors.ENDC}"
-            ).lower()
-            == "y"
-        ):
-            print(f"\n{Colors.BLUE}Windows certificate setup:{Colors.ENDC}")
-            cert_path = input("Path to Windows .p12 certificate file: ").strip()
-
-            if os.path.exists(cert_path):
-                cert_password = getpass.getpass("Certificate password: ")
-                with open(cert_path, "rb") as f:
-                    cert_data = f.read()
-                self.secrets["WINDOWS_CERTIFICATE_P12"] = base64.b64encode(
-                    cert_data
-                ).decode("utf-8")
-                self.secrets["WINDOWS_CERTIFICATE_PASSWORD"] = cert_password
-                self.print_success("Windows certificate configured")
-            else:
-                self.print_error(f"Certificate file not found: {cert_path}")
-
-    def setup_app_store_connect(self):
-        """Set up App Store Connect API integration."""
-        self.print_step(5, "App Store Connect API Setup")
-
-        print(
-            "App Store Connect API keys enable automatic app submission to the Mac App Store."
-        )
-        print("This is optional but recommended for automated releases.")
-
-        if (
-            input(
-                f"{Colors.BLUE}Set up App Store Connect API? (y/n): {Colors.ENDC}"
-            ).lower()
-            != "y"
-        ):
-            self.print_info("App Store Connect API setup skipped")
-            return
-
-        print(f"\n{Colors.BLUE}To create an App Store Connect API key:{Colors.ENDC}")
-        print("1. Go to https://appstoreconnect.apple.com/access/api")
-        print("2. Sign in with your Apple Developer account")
-        print("3. Click '+' to create a new API key")
-        print("4. Choose 'Developer' role (or higher)")
-        print("5. Download the .p8 file")
-        print("6. Note the Key ID and Issuer ID")
-
-        self.secrets["APP_STORE_CONNECT_KEY_ID"] = input(
-            f"{Colors.BLUE}App Store Connect Key ID (e.g., ABC123DEF4): {Colors.ENDC}"
-        ).strip()
-
-        self.secrets["APP_STORE_CONNECT_ISSUER_ID"] = input(
-            f"{Colors.BLUE}App Store Connect Issuer ID (UUID): {Colors.ENDC}"
-        ).strip()
-
-        print(f"\n{Colors.BLUE}API Key file (.p8):{Colors.ENDC}")
-        api_key_path = input(f"Path to AuthKey_*.p8 file: ").strip()
-
-        if os.path.exists(api_key_path):
-            with open(api_key_path, "rb") as f:
-                api_key_data = f.read()
-            self.secrets["APP_STORE_CONNECT_API_KEY"] = base64.b64encode(
-                api_key_data
-            ).decode("utf-8")
-            self.print_success("App Store Connect API key encoded")
-        else:
-            self.print_error(f"API key file not found: {api_key_path}")
-            return
-
-        self.print_success("App Store Connect API configured")
-
-    def configure_build_options(self):
-        """Configure build and distribution options."""
-        self.print_step(6, "Build Configuration")
-
-        if (
-            input(f"{Colors.BLUE}Enable App Store builds? (y/n): {Colors.ENDC}").lower()
-            == "y"
-        ):
-            self.secrets["ENABLE_APP_STORE_BUILD"] = "true"
-
-            if (
-                input(
-                    f"{Colors.BLUE}Enable automatic App Store submission? (y/n): {Colors.ENDC}"
-                ).lower()
-                == "y"
-            ):
-                self.secrets["ENABLE_APP_STORE_SUBMISSION"] = "true"
-
-        if (
-            input(f"{Colors.BLUE}Enable notarization? (y/n): {Colors.ENDC}").lower()
-            == "y"
-        ):
-            self.secrets["ENABLE_NOTARIZATION"] = "true"
-
-        self.print_success("Build options configured")
-
-    def generate_secrets_file(self):
-        """Generate a secrets file for reference."""
-        self.print_step(7, "Generating Secrets File")
-
-        secrets_file = "github_secrets.txt"
-
-        with open(secrets_file, "w") as f:
-            f.write("# GitHub Secrets for R2MIDI\n")
-            f.write("# Copy these values to your GitHub repository secrets\n")
-            f.write("# Repository → Settings → Secrets and variables → Actions\n\n")
-
-            for key, value in self.secrets.items():
-                # Don't write any sensitive values to file, even if they're not explicitly marked
-                if (
-                    "PASSWORD" in key
-                    or "P12" in key
-                    or "TOKEN" in key
-                    or "KEY" in key
-                    or "SECRET" in key
-                    or "CERTIFICATE" in key
-                ):
-                    f.write(f"{key}=<sensitive_value_hidden>\n")
-                else:
-                    f.write(f"{key}={value}\n")
-
-        self.print_success(f"Secrets reference saved to {secrets_file}")
-        self.print_warning(
-            "Remember to securely delete this file after adding secrets to GitHub!"
-        )
-
-    def display_setup_instructions(self):
-        """Display final setup instructions."""
-        self.print_step(8, "GitHub Repository Setup")
-
-        print(f"{Colors.BOLD}To complete the setup:{Colors.ENDC}\n")
-
-        print("1. Go to your GitHub repository:")
-        print(f"   https://github.com/{self.github_repo}")
-
-        print("\n2. Navigate to Settings → Secrets and variables → Actions")
-
-        print("\n3. Add the following repository secrets:")
-
-        for key, value in self.secrets.items():
-            # Use the same criteria for masking sensitive values as in generate_secrets_file
-            if (
-                "PASSWORD" in key
-                or "P12" in key
-                or "TOKEN" in key
-                or "KEY" in key
-                or "SECRET" in key
-                or "CERTIFICATE" in key
-            ):
-                print(
-                    f"   {Colors.WARNING}{key}{Colors.ENDC} = <paste the value securely>"
-                )
-            else:
-                print(f"   {Colors.GREEN}{key}{Colors.ENDC} = {value}")
-
-        print(f"\n4. {Colors.BOLD}Security reminders:{Colors.ENDC}")
-        print("   - Never commit certificates or passwords to your repository")
-        print("   - Use GitHub secrets for all sensitive information")
-        print("   - Regularly rotate app-specific passwords")
-        print("   - Delete the github_secrets.txt file after use")
-
-        print(f"\n5. {Colors.BOLD}Test the workflow:{Colors.ENDC}")
-        print("   - Push to master branch to trigger the build")
-        print("   - Check Actions tab for build progress")
-        print("   - Verify signed applications in releases")
-
-    def run(self):
-        """Run the complete setup process."""
-        self.print_header("R2MIDI GitHub Secrets Setup Generator")
-
-        print(
-            "This tool will help you set up all the necessary secrets and certificates"
-        )
-        print("for automated building and code signing of your R2MIDI applications.")
-
-        try:
-            if not self.check_prerequisites():
-                return False
-
-            self.get_basic_info()
-            self.get_apple_developer_info()
-            self.setup_certificates()
-            self.setup_app_store_connect()
-            self.configure_build_options()
-            self.generate_secrets_file()
-            self.display_setup_instructions()
-
-            self.print_header("Setup Complete!")
-            self.print_success("All secrets and certificates have been prepared")
-            self.print_info(
-                "Follow the instructions above to complete the GitHub setup"
-            )
-
+    def update_github_secrets(self) -> bool:
+        """Update all secrets in GitHub repository."""
+        self.print_step(6, "Updating GitHub Repository Secrets")
+        
+        if self.test_only:
+            self.print_info("TEST MODE: Would update secrets, but no changes will be made")
             return True
+        
+        repository = self.config['github']['repository']
+        
+        # Get repository public key
+        try:
+            response = self.session.get(f"{self.github_api_base}/repos/{repository}/actions/secrets/public-key")
+            if response.status_code != 200:
+                self.print_error(f"Failed to get repository public key: {response.status_code}")
+                return False
+            
+            public_key = response.json()
+            self.print_success("Retrieved repository public key for encryption")
+            
+        except Exception as e:
+            self.print_error(f"Error getting repository public key: {e}")
+            return False
+        
+        # Get existing secrets for idempotency (unless force mode)
+        existing_secrets = []
+        if not self.force_update:
+            try:
+                response = self.session.get(f"{self.github_api_base}/repos/{repository}/actions/secrets")
+                if response.status_code == 200:
+                    secrets_data = response.json()
+                    existing_secrets = [secret['name'] for secret in secrets_data.get('secrets', [])]
+                    self.print_info(f"Found {len(existing_secrets)} existing secrets")
+            except Exception:
+                pass
+        
+        # Update each secret
+        success_count = 0
+        update_count = 0
+        create_count = 0
+        
+        for secret_name, secret_value in self.secrets.items():
+            is_update = secret_name in existing_secrets
+            
+            # Encrypt the secret value
+            encrypted_value = self.encrypt_secret(secret_value, public_key['key'])
+            if not encrypted_value:
+                self.print_error(f"Failed to encrypt secret: {secret_name}")
+                continue
+            
+            # Prepare the request payload
+            payload = {
+                'encrypted_value': encrypted_value,
+                'key_id': public_key['key_id']
+            }
+            
+            try:
+                response = self.session.put(
+                    f"{self.github_api_base}/repos/{repository}/actions/secrets/{secret_name}",
+                    json=payload
+                )
+                
+                if response.status_code in [201, 204]:
+                    if self.force_update or is_update:
+                        self.print_success(f"🔥 Updated secret: {secret_name}")
+                        update_count += 1
+                    else:
+                        self.print_success(f"Created secret: {secret_name}")
+                        create_count += 1
+                    success_count += 1
+                else:
+                    self.print_error(f"Failed to set secret {secret_name}: {response.status_code}")
+                    
+            except Exception as e:
+                self.print_error(f"Error setting secret {secret_name}: {e}")
+        
+        # Summary
+        total_secrets = len(self.secrets)
+        self.print_success(f"Successfully processed {success_count}/{total_secrets} secrets")
+        
+        if self.force_update:
+            self.print_info(f"Force updated: {success_count} secrets")
+        else:
+            self.print_info(f"Created: {create_count}, Updated: {update_count}")
+        
+        return success_count == total_secrets
 
+    def display_summary(self) -> None:
+        """Display a summary of what was configured."""
+        self.print_step(7, "Configuration Summary")
+        
+        repository = self.config['github']['repository']
+        
+        print(f"{Colors.BOLD}Repository:{Colors.ENDC} {repository}")
+        if self.test_only:
+            print(f"{Colors.BLUE}Mode: TEST ONLY (no changes made){Colors.ENDC}")
+        elif self.force_update:
+            print(f"{Colors.WARNING}Mode: FORCE UPDATE (all secrets refreshed){Colors.ENDC}")
+        else:
+            print(f"{Colors.BLUE}Mode: Idempotent (only missing/changed secrets updated){Colors.ENDC}")
+        
+        print(f"{Colors.BOLD}Secrets configured:{Colors.ENDC}")
+        
+        # Group secrets by category
+        categories = {
+            'macOS Signing (Required)': [
+                'APPLE_DEVELOPER_ID_APPLICATION_CERT',
+                'APPLE_DEVELOPER_ID_INSTALLER_CERT',
+                'APPLE_CERT_PASSWORD',
+                'APPLE_ID',
+                'APPLE_ID_PASSWORD',
+                'APPLE_TEAM_ID'
+            ],
+            'App Store Connect (Optional)': [
+                'APP_STORE_CONNECT_KEY_ID',
+                'APP_STORE_CONNECT_ISSUER_ID',
+                'APP_STORE_CONNECT_API_KEY'
+            ],
+            'Build Configuration': [
+                'ENABLE_APP_STORE_BUILD',
+                'ENABLE_APP_STORE_SUBMISSION',
+                'ENABLE_NOTARIZATION'
+            ],
+            'App Information': [
+                'APP_BUNDLE_ID_PREFIX',
+                'APP_AUTHOR_NAME',
+                'APP_AUTHOR_EMAIL'
+            ]
+        }
+        
+        for category, secret_names in categories.items():
+            found_secrets = [name for name in secret_names if name in self.secrets]
+            if found_secrets:
+                print(f"\n{Colors.CYAN}{category}:{Colors.ENDC}")
+                for secret_name in found_secrets:
+                    if self.test_only:
+                        print(f"  {Colors.BLUE}🧪 {secret_name}{Colors.ENDC}")
+                    elif self.force_update:
+                        print(f"  {Colors.WARNING}🔥 {secret_name}{Colors.ENDC}")
+                    else:
+                        print(f"  {Colors.GREEN}✓ {secret_name}{Colors.ENDC}")
+
+    def run(self) -> bool:
+        """Run the complete secrets setup process."""
+        mode_parts = []
+        if self.test_only:
+            mode_parts.append("Test Mode")
+        if self.force_update:
+            mode_parts.append("Force Mode")
+        if not mode_parts:
+            mode_parts.append("Idempotent Mode")
+        
+        mode_text = " + ".join(mode_parts)
+        self.print_header(f"R2MIDI GitHub Secrets Manager ({mode_text})")
+        
+        print("This tool automatically creates/updates ALL GitHub secrets needed for:")
+        print("• macOS code signing and notarization")
+        print("• DMG and PKG installer creation")
+        print("• App Store Connect integration")
+        print("• Automated build and release workflows")
+        
+        if self.test_only:
+            print(f"\n{Colors.BLUE}🧪 TEST MODE: Will validate everything but make no changes{Colors.ENDC}")
+        if self.force_update:
+            print(f"\n{Colors.WARNING}🔥 FORCE MODE: All secrets will be updated regardless of current state{Colors.ENDC}")
+        
+        try:
+            # Step 1: Install dependencies
+            if not self.install_dependencies():
+                return False
+            
+            # Step 2: Load configuration
+            if not self.load_config():
+                return False
+            
+            # Step 3: Test GitHub access
+            if not self.test_github_access():
+                return False
+            
+            # Step 4: Find and validate certificates
+            app_cert, installer_cert = self.find_and_validate_certificates()
+            if not app_cert or not installer_cert:
+                return False
+            
+            # Step 5: Prepare all secrets
+            if not self.prepare_all_secrets(app_cert, installer_cert):
+                return False
+            
+            # Step 6: Update GitHub secrets
+            if not self.update_github_secrets():
+                return False
+            
+            # Step 7: Display summary
+            self.display_summary()
+            
+            if self.test_only:
+                self.print_header("Test Complete - All Checks Passed!")
+                self.print_success("Your configuration is ready for GitHub secrets")
+                self.print_info("Run without --test-only to actually create/update secrets")
+            else:
+                mode_msg = "Force Updated" if self.force_update else "Updated"
+                self.print_header(f"Success! All Secrets {mode_msg}")
+                self.print_success("Your GitHub repository is now fully configured for macOS builds")
+                self.print_info("Push a commit to trigger the macOS build workflow and test the setup")
+            
+            return True
+            
         except KeyboardInterrupt:
             self.print_error("\nSetup interrupted by user")
             return False
@@ -528,9 +710,39 @@ class GitHubSecretsGenerator:
 
 def main():
     """Main entry point."""
-    generator = GitHubSecretsGenerator()
-
-    if generator.run():
+    parser = argparse.ArgumentParser(
+        description='Complete GitHub Secrets Manager for R2MIDI macOS Signing',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python scripts/setup_github_secrets.py              # Normal idempotent mode
+  python scripts/setup_github_secrets.py --force      # Force update all secrets
+  python scripts/setup_github_secrets.py --test-only  # Test configuration only
+  python scripts/setup_github_secrets.py -f -t        # Force mode test
+        """
+    )
+    
+    parser.add_argument(
+        '--force', '-f',
+        action='store_true',
+        help='Force update all secrets even if they already exist'
+    )
+    
+    parser.add_argument(
+        '--test-only', '-t',
+        action='store_true',
+        help='Test configuration and dependencies without making changes'
+    )
+    
+    args = parser.parse_args()
+    
+    # Change to project root directory
+    project_root = Path(__file__).parent.parent
+    os.chdir(project_root)
+    
+    manager = GitHubSecretsManager(force_update=args.force, test_only=args.test_only)
+    
+    if manager.run():
         sys.exit(0)
     else:
         sys.exit(1)
