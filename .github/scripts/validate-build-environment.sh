@@ -38,12 +38,21 @@ check_python_version() {
 
 # Function to check Briefcase
 check_briefcase() {
+    local platform="${1:-unknown}"
+    
     echo "📦 Checking Briefcase..."
     
     if ! command_exists briefcase; then
-        echo "❌ Error: Briefcase not found"
-        echo "Install with: pip install briefcase"
-        exit 1
+        if [ "$platform" = "macos" ]; then
+            echo "⚠️ Warning: Briefcase not found (optional for macOS distribution builds)"
+            echo "For macOS, final distribution packages (.pkg/.dmg) are created using native tools"
+            echo "If you need Briefcase for initial app building, install with: pip install briefcase"
+            return 0
+        else
+            echo "❌ Error: Briefcase not found"
+            echo "Install with: pip install briefcase"
+            exit 1
+        fi
     fi
     
     local briefcase_version=$(briefcase --version 2>/dev/null || echo "unknown")
@@ -232,7 +241,7 @@ echo "🚀 Starting build environment validation..."
 
 # Common validations for all platforms
 check_python_version
-check_briefcase
+check_briefcase "$PLATFORM"
 check_project_structure
 check_disk_space
 
