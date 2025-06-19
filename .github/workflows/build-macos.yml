@@ -71,6 +71,13 @@ jobs:
             requirements.txt
             r2midi_client/requirements.txt
 
+      - name: Make scripts executable
+        shell: bash
+        run: |
+          echo "🔧 Ensuring all scripts are executable..."
+          find .github/scripts/ -name "*.sh" -type f -exec chmod +x {} \;
+          echo "✅ All scripts are now executable"
+
       - name: Extract version information
         id: version
         shell: bash

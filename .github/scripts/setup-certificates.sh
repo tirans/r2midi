@@ -224,8 +224,20 @@ if security find-identity -v "$TEMP_KEYCHAIN" | grep -q "Developer ID Installer"
     echo "✅ Installer signing certificate found"
     INSTALLER_IDENTITY=$(security find-identity -v "$TEMP_KEYCHAIN" | grep "Developer ID Installer" | head -1 | cut -d'"' -f2)
     echo "Installer Identity: $INSTALLER_IDENTITY"
+elif security find-identity -v "$TEMP_KEYCHAIN" | grep -q "3rd Party Mac Developer Installer"; then
+    echo "⚠️ Warning: Found '3rd Party Mac Developer Installer' certificate"
+    echo "This certificate is for Mac App Store distribution, not outside distribution."
+    echo "For PKG installers distributed outside the App Store, you need 'Developer ID Installer' certificate."
+    echo ""
+    echo "📝 Certificate Types:"
+    echo "  - '3rd Party Mac Developer Installer' = Mac App Store distribution"
+    echo "  - 'Developer ID Installer' = Outside App Store distribution (what you need)"
+    echo ""
+    echo "PKG creation will be skipped. DMG fallback will be used."
 else
-    echo "⚠️ Warning: Installer signing certificate not found (PKG creation will be skipped)"
+    echo "⚠️ Warning: No installer signing certificate found"
+    echo "Neither 'Developer ID Installer' nor 'Mac App Store' certificates found."
+    echo "PKG creation will be skipped. DMG fallback will be used."
 fi
 
 # Export identities for use by other scripts

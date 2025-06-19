@@ -57,9 +57,23 @@ if [ -z "${INSTALLER_SIGNING_IDENTITY:-}" ]; then
     echo "  1. Developer ID Application certificate (for app signing) - ✅ Available"
     echo "  2. Developer ID Installer certificate (for PKG signing) - ❌ Missing"
     echo ""
-    echo "📝 Available Options:"
-    echo "  - Add Developer ID Installer certificate to your GitHub secrets"
-    echo "  - Or use DMG-only distribution (modify workflow to skip PKG creation)"
+    
+    # Check if they have the wrong type of certificate
+    if [ -n "${TEMP_KEYCHAIN:-}" ] && security find-identity -v "$TEMP_KEYCHAIN" | grep -q "3rd Party Mac Developer Installer"; then
+        echo "⚠️ Certificate Type Issue:"
+        echo "  You have: '3rd Party Mac Developer Installer' (for Mac App Store)"
+        echo "  You need: 'Developer ID Installer' (for outside App Store distribution)"
+        echo ""
+        echo "🎯 Distribution Options:"
+        echo "  Option 1: Get 'Developer ID Installer' certificate for PKG installers"
+        echo "  Option 2: Use DMG distribution (fallback will handle this)"
+        echo "  Option 3: Submit to Mac App Store (different workflow needed)"
+    else
+        echo "📝 Available Options:"
+        echo "  - Add Developer ID Installer certificate to your GitHub secrets"
+        echo "  - Or use DMG-only distribution (fallback will handle this)"
+    fi
+    
     echo ""
     echo "🔗 More info: https://developer.apple.com/support/certificates/"
     exit 1
