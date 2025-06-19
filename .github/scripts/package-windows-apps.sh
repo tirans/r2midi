@@ -64,16 +64,31 @@ Note: This is an unsigned application. Windows may show security warnings.
 You can safely ignore these warnings for this open-source application.
 EOF
         
-        # Create the ZIP file
-        (cd "$temp_dir" && zip -r "${zip_name}" "R2MIDI-${app_name}-${VERSION}")
+        # Create the ZIP file - Use PowerShell on Windows
+        if command -v powershell >/dev/null 2>&1; then
+            echo "📦 Using PowerShell Compress-Archive..."
+            powershell -Command "Compress-Archive -Path '$temp_dir/R2MIDI-${app_name}-${VERSION}' -DestinationPath '${zip_name}'"
+        elif command -v zip >/dev/null 2>&1; then
+            echo "📦 Using zip command..."
+            (cd "$temp_dir" && zip -r "${zip_name}" "R2MIDI-${app_name}-${VERSION}")
+            mv "$temp_dir/${zip_name}" ./
+        else
+            echo "⚠️ Warning: No zip utility found, creating tar.gz instead..."
+            (cd "$temp_dir" && tar -czf "${zip_name%.zip}.tar.gz" "R2MIDI-${app_name}-${VERSION}")
+            mv "$temp_dir/${zip_name%.zip}.tar.gz" ./
+        fi
         
-        # Move to artifacts directory
-        mv "$temp_dir/${zip_name}" artifacts/
+        # Move to artifacts directory if zip was created successfully
+        if [ -f "${zip_name}" ]; then
+            mv "${zip_name}" artifacts/
+        elif [ -f "${zip_name%.zip}.tar.gz" ]; then
+            mv "${zip_name%.zip}.tar.gz" artifacts/
+        fi
         
         # Cleanup
         rm -rf "$temp_dir"
         
-        echo "✅ Created ZIP package: artifacts/$zip_name"
+        echo "✅ Created package: artifacts/$zip_name"
         return 0
     else
         echo "❌ Source directory not found: $source_dir"
@@ -177,15 +192,28 @@ You can safely ignore these warnings for this open-source application.
 EOF
     
     # Create the combined ZIP
-    (cd "$temp_dir" && zip -r "$combined_zip" "R2MIDI-Complete-${VERSION}")
+    if command -v powershell >/dev/null 2>&1; then
+        echo "📦 Using PowerShell for combined package..."
+        powershell -Command "Compress-Archive -Path '$temp_dir/R2MIDI-Complete-${VERSION}' -DestinationPath '$combined_zip'"
+    elif command -v zip >/dev/null 2>&1; then
+        echo "📦 Using zip for combined package..."
+        (cd "$temp_dir" && zip -r "$combined_zip" "R2MIDI-Complete-${VERSION}")
+        mv "$temp_dir/$combined_zip" ./
+    else
+        echo "⚠️ Creating tar.gz for combined package..."
+        (cd "$temp_dir" && tar -czf "${combined_zip%.zip}.tar.gz" "R2MIDI-Complete-${VERSION}")
+        mv "$temp_dir/${combined_zip%.zip}.tar.gz" ./
+        combined_zip="${combined_zip%.zip}.tar.gz"
+    fi
     
     # Move to artifacts directory
-    mv "$temp_dir/$combined_zip" artifacts/
+    if [ -f "$combined_zip" ]; then
+        mv "$combined_zip" artifacts/
+        echo "✅ Created combined package: artifacts/$combined_zip"
+    fi
     
     # Cleanup
     rm -rf "$temp_dir"
-    
-    echo "✅ Created combined package: artifacts/$combined_zip"
 fi
 
 # Generate package information

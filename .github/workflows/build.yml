@@ -109,7 +109,7 @@ jobs:
 
       - name: Check package
         run: |
-          python -m twine check dist/*
+          python -m twine check dist/*.whl dist/*.tar.gz
 
       - name: Upload Python package artifacts
         uses: actions/upload-artifact@v4
@@ -163,6 +163,8 @@ jobs:
         shell: bash
         run: |
           ./.github/scripts/install-python-dependencies.sh production
+          # Install PyInstaller for alternative macOS build approach
+          pip install pyinstaller
 
       - name: Extract version information
         shell: bash
@@ -215,12 +217,24 @@ jobs:
               tar -czf "build_artifacts/R2MIDI-Client-linux-v${APP_VERSION}.tar.gz" -C build/r2midi-client/linux/system .
             fi
           else
-            # Windows - create zip files
+            # Windows - create archives using PowerShell or fallback
             if [ -d "build/server/windows/app" ]; then
-              cd build/server/windows/app && zip -r "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Server-windows-v${APP_VERSION}.zip" * && cd "$GITHUB_WORKSPACE"
+              if command -v powershell >/dev/null 2>&1; then
+                powershell -Command "Compress-Archive -Path 'build/server/windows/app/*' -DestinationPath 'build_artifacts/R2MIDI-Server-windows-v${APP_VERSION}.zip'"
+              elif command -v zip >/dev/null 2>&1; then
+                cd build/server/windows/app && zip -r "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Server-windows-v${APP_VERSION}.zip" * && cd "$GITHUB_WORKSPACE"
+              else
+                cd build/server/windows/app && tar -czf "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Server-windows-v${APP_VERSION}.tar.gz" * && cd "$GITHUB_WORKSPACE"
+              fi
             fi
             if [ -d "build/r2midi-client/windows/app" ]; then
-              cd build/r2midi-client/windows/app && zip -r "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Client-windows-v${APP_VERSION}.zip" * && cd "$GITHUB_WORKSPACE"
+              if command -v powershell >/dev/null 2>&1; then
+                powershell -Command "Compress-Archive -Path 'build/r2midi-client/windows/app/*' -DestinationPath 'build_artifacts/R2MIDI-Client-windows-v${APP_VERSION}.zip'"
+              elif command -v zip >/dev/null 2>&1; then
+                cd build/r2midi-client/windows/app && zip -r "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Client-windows-v${APP_VERSION}.zip" * && cd "$GITHUB_WORKSPACE"
+              else
+                cd build/r2midi-client/windows/app && tar -czf "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Client-windows-v${APP_VERSION}.tar.gz" * && cd "$GITHUB_WORKSPACE"
+              fi
             fi
           fi
 
@@ -235,227 +249,24 @@ jobs:
           path: build_artifacts/
           retention-days: 30
 
-  build-macos-packages:
-    name: Build macOS Signed Packages
-    runs-on: macos-latest
+  build-macos-pkg-installers:
+    name: Build macOS PKG Installers (Signed & Notarized)
     needs: test
+    uses: ./.github/workflows/build-macos.yml
     if: github.event_name == 'push'
-    timeout-minutes: 60
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup environment
-        shell: bash
-        run: |
-          ./.github/scripts/setup-environment.sh
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Extract version information
-        id: version
-        shell: bash
-        run: |
-          ./.github/scripts/extract-version.sh
-          echo "🍎 Building macOS packages for version: ${APP_VERSION}"
-
-      - name: Install Python dependencies
-        shell: bash
-        run: |
-          ./.github/scripts/install-python-dependencies.sh production
-
-      - name: Setup certificates and keychain
-        env:
-          APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
-          APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
-          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-        run: |
-          echo "🔐 Setting up certificates..."
-          
-          TEMP_KEYCHAIN="build.keychain"
-          TEMP_KEYCHAIN_PASSWORD="temp_password_$(date +%s)"
-          
-          security create-keychain -p "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$TEMP_KEYCHAIN"
-          security unlock-keychain -p "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
-          security list-keychains -d user -s "$TEMP_KEYCHAIN" $(security list-keychains -d user | sed s/\"//g)
-          
-          echo "$APPLE_DEVELOPER_ID_APPLICATION_CERT" | base64 --decode > app_cert.p12
-          echo "$APPLE_DEVELOPER_ID_INSTALLER_CERT" | base64 --decode > installer_cert.p12
-          
-          security import app_cert.p12 -k "$TEMP_KEYCHAIN" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
-          security import installer_cert.p12 -k "$TEMP_KEYCHAIN" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/productsign
-          
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
-          
-          rm -f app_cert.p12 installer_cert.p12
-          echo "✅ Certificates imported"
-
-      - name: Build applications with PyInstaller
-        run: |
-          echo "🔨 Building applications..."
-          mkdir -p build/server build/client
-          
-          # Build server
-          python -m PyInstaller \
-            --name "R2MIDI Server" \
-            --windowed \
-            --onedir \
-            --clean \
-            --distpath build/server \
-            --workpath build/server/work \
-            --specpath build/server \
-            --add-data "server:server" \
-            --hidden-import "uvicorn" \
-            --hidden-import "fastapi" \
-            --hidden-import "pydantic" \
-            --osx-bundle-identifier "com.r2midi.server" \
-            server/main.py
-          
-          # Build client
-          python -m PyInstaller \
-            --name "R2MIDI Client" \
-            --windowed \
-            --onedir \
-            --clean \
-            --distpath build/client \
-            --workpath build/client/work \
-            --specpath build/client \
-            --add-data "r2midi_client:r2midi_client" \
-            --hidden-import "PyQt6" \
-            --hidden-import "httpx" \
-            --osx-bundle-identifier "com.r2midi.client" \
-            r2midi_client/main.py
-
-      - name: Sign applications
-        env:
-          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
-        run: |
-          echo "✍️ Signing applications..."
-          
-          sign_app() {
-            local app_path="$1"
-            echo "Signing: $app_path"
-            
-            find "$app_path" -type f \( -perm +111 -o -name "*.dylib" -o -name "*.so" \) -exec codesign \
-              --force --verify --verbose \
-              --sign "Developer ID Application: $APPLE_DEVELOPER_ID" \
-              --options runtime --timestamp {} \;
-            
-            codesign --force --verify --verbose \
-              --sign "Developer ID Application: $APPLE_DEVELOPER_ID" \
-              --options runtime --timestamp "$app_path"
-          }
-          
-          if [ -d "build/server/R2MIDI Server" ]; then
-            sign_app "build/server/R2MIDI Server"
-          fi
-          
-          if [ -d "build/client/R2MIDI Client" ]; then
-            sign_app "build/client/R2MIDI Client"
-          fi
-
-      - name: Create and sign packages
-        env:
-          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
-        run: |
-          echo "📦 Creating packages..."
-          mkdir -p packages
-          
-          create_pkg() {
-            local app_path="$1"
-            local pkg_name="$2"
-            local identifier="$3"
-            
-            if [ -d "$app_path" ]; then
-              echo "Creating $pkg_name.pkg..."
-              
-              mkdir -p "pkg_temp/$pkg_name/Applications"
-              cp -R "$app_path" "pkg_temp/$pkg_name/Applications/"
-              
-              pkgbuild --root "pkg_temp/$pkg_name" --identifier "$identifier" \
-                --version "$APP_VERSION" --install-location "/" \
-                "packages/$pkg_name-unsigned.pkg"
-              
-              productsign --sign "Developer ID Installer: $APPLE_DEVELOPER_ID" \
-                "packages/$pkg_name-unsigned.pkg" "packages/$pkg_name-v$APP_VERSION.pkg"
-              
-              rm "packages/$pkg_name-unsigned.pkg"
-              rm -rf "pkg_temp/$pkg_name"
-            fi
-          }
-          
-          create_pkg "build/server/R2MIDI Server" "R2MIDI-Server" "com.r2midi.server"
-          create_pkg "build/client/R2MIDI Client" "R2MIDI-Client" "com.r2midi.client"
-
-      - name: Notarize packages
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APP_SPECIFIC_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
-          TEAM_ID: ${{ secrets.TEAM_ID }}
-        run: |
-          echo "🔔 Notarizing packages..."
-          
-          for pkg in packages/*.pkg; do
-            if [ -f "$pkg" ]; then
-              echo "Notarizing: $(basename "$pkg")"
-              xcrun notarytool submit "$pkg" \
-                --apple-id "$APPLE_ID" \
-                --password "$APP_SPECIFIC_PASSWORD" \
-                --team-id "$TEAM_ID" \
-                --wait
-              
-              xcrun stapler staple "$pkg"
-              xcrun stapler validate "$pkg"
-            fi
-          done
-
-      - name: Create DMG files
-        run: |
-          echo "💿 Creating DMG files..."
-          
-          create_dmg() {
-            local app_path="$1"
-            local dmg_name="$2"
-            
-            if [ -d "$app_path" ]; then
-              mkdir -p "dmg_temp/$dmg_name"
-              cp -R "$app_path" "dmg_temp/$dmg_name/"
-              ln -s /Applications "dmg_temp/$dmg_name/Applications"
-              
-              hdiutil create -volname "$dmg_name" -srcfolder "dmg_temp/$dmg_name" \
-                -ov -format UDZO "packages/$dmg_name-v$APP_VERSION.dmg"
-              
-              rm -rf "dmg_temp/$dmg_name"
-            fi
-          }
-          
-          create_dmg "build/server/R2MIDI Server" "R2MIDI-Server"
-          create_dmg "build/client/R2MIDI Client" "R2MIDI-Client"
-          
-          echo "✅ Package creation completed:"
-          ls -la packages/
-
-      - name: Upload macOS packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-packages
-          path: packages/
-          retention-days: 30
-
-      - name: Cleanup keychain
-        if: always()
-        run: |
-          security delete-keychain build.keychain || true
+    with:
+      version: "0.1.166"
+      build-type: "production"
+    secrets:
+      APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
+      APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
+      APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
   create-release:
-    needs: [build-cross-platform, build-macos-packages]
+    needs: [build-cross-platform, build-macos-pkg-installers]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
 

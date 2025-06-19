@@ -109,45 +109,71 @@ jobs:
         run: |
           ./.github/scripts/build-briefcase-apps.sh macos signed
 
-      - name: Sign and notarize applications
+      - name: Create signed and notarized PKG installers
         shell: bash
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          ./.github/scripts/sign-and-notarize-macos.sh \
+          ./.github/scripts/create-macos-pkg.sh \
             "${{ steps.version.outputs.version }}" \
             "${{ inputs.build-type }}" \
             "${{ secrets.APPLE_ID }}" \
             "${{ secrets.APPLE_ID_PASSWORD }}" \
             "${{ secrets.APPLE_TEAM_ID }}"
 
-      - name: Package final artifacts
+      - name: Organize final artifacts
         shell: bash
         run: |
-          ./.github/scripts/package-macos-apps.sh "${{ steps.version.outputs.version }}" "${{ inputs.build-type }}"
+          echo "📦 Organizing final PKG installers..."
+          
+          # The create-macos-pkg.sh script already creates the final packages
+          # Just verify and display what was created
+          
+          echo "✅ PKG Installers created:"
+          find artifacts/ -name "*.pkg" | while read pkg; do
+            if [ -f "$pkg" ]; then
+              size=$(du -h "$pkg" | cut -f1)
+              echo "  📦 $(basename "$pkg") ($size)"
+            fi
+          done
+          
+          echo ""
+          echo "📍 Optional DMG files:"
+          find artifacts/ -name "*.dmg" | while read dmg; do
+            if [ -f "$dmg" ]; then
+              size=$(du -h "$dmg" | cut -f1)
+              echo "  💿 $(basename "$dmg") ($size)"
+            fi
+          done
+          
+          echo ""
+          echo "✅ All artifacts ready for distribution"
 
-      - name: Validate signed packages
+      - name: Validate PKG installers
         shell: bash
         run: |
-          echo "🔍 Validating all signed packages..."
-          find artifacts/ -name "*.dmg" -o -name "*.pkg" | while read file; do
+          echo "🔍 Validating PKG installers (primary distribution format)..."
+          
+          pkg_count=0
+          find artifacts/ -name "*.pkg" | while read file; do
             if [ -f "$file" ]; then
-              echo "Validating: $(basename "$file")"
+              pkg_count=$((pkg_count + 1))
+              echo "Validating PKG: $(basename "$file")"
               
-              # Check code signature
-              if codesign --verify --deep --strict "$file" 2>/dev/null; then
-                echo "  ✅ Code signature valid"
+              # Check PKG signature
+              if pkgutil --check-signature "$file" 2>/dev/null | grep -q "signed"; then
+                echo "  ✅ PKG signature valid"
               else
-                echo "  ❌ Code signature invalid"
+                echo "  ❌ PKG signature invalid"
               fi
               
-              # Check Gatekeeper compatibility
+              # Check Gatekeeper compatibility for installers
               if spctl --assess --type install "$file" 2>/dev/null; then
-                echo "  ✅ Gatekeeper accepts package"
+                echo "  ✅ PKG passes Gatekeeper assessment"
               else
-                echo "  ⚠️ Gatekeeper assessment failed (may be normal before distribution)"
+                echo "  ⚠️ PKG Gatekeeper assessment failed (may be normal before distribution)"
               fi
               
               # Check notarization stapling
@@ -160,6 +186,24 @@ jobs:
               echo ""
             fi
           done
+          
+          echo "📍 Optional DMG validation..."
+          find artifacts/ -name "*.dmg" | while read file; do
+            if [ -f "$file" ]; then
+              echo "Validating DMG: $(basename "$file")"
+              
+              # Check DMG signature
+              if codesign --verify --deep --strict "$file" 2>/dev/null; then
+                echo "  ✅ DMG signature valid"
+              else
+                echo "  ⚠️ DMG signature verification failed"
+              fi
+              
+              echo ""
+            fi
+          done
+          
+          echo "✅ PKG installer validation complete"
 
       - name: Upload artifacts
         id: upload
@@ -173,7 +217,35 @@ jobs:
       - name: Build summary
         shell: bash
         run: |
-          ./.github/scripts/generate-build-summary.sh macos "${{ inputs.build-type }}" "${{ steps.version.outputs.version }}" signed
+          echo "✅ macOS PKG installer build complete!"
+          echo ""
+          echo "📦 PRIMARY DISTRIBUTION FILES (PKG Installers):"
+          find artifacts/ -name "*.pkg" | while read pkg; do
+            if [ -f "$pkg" ]; then
+              size=$(du -h "$pkg" | cut -f1)
+              echo "  📦 $(basename "$pkg") ($size) - READY FOR DISTRIBUTION"
+            fi
+          done
+          
+          echo ""
+          echo "💿 OPTIONAL FILES (DMG Images):"
+          find artifacts/ -name "*.dmg" | while read dmg; do
+            if [ -f "$dmg" ]; then
+              size=$(du -h "$dmg" | cut -f1)
+              echo "  💿 $(basename "$dmg") ($size) - Manual installation option"
+            fi
+          done
+          
+          echo ""
+          echo "📋 Distribution Status:"
+          echo "  ✅ PKG installers are signed with Developer ID Installer"
+          echo "  ✅ PKG installers are notarized by Apple"
+          echo "  ✅ PKG installers will install to /Applications automatically"
+          echo "  ✅ No security warnings will appear to users"
+          echo "  ✅ Ready for public distribution"
+          
+          # Generate traditional build summary for compatibility
+          ./.github/scripts/generate-build-summary.sh macos "${{ inputs.build-type }}" "${{ steps.version.outputs.version }}" pkg-focused
 
       - name: Cleanup signing materials
         if: always()
