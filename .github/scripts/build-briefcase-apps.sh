@@ -55,16 +55,16 @@ build_app() {
     case "$platform" in
         linux)
             echo "🐧 Building Linux application..."
-            briefcase build "$app_name" --target system
+            briefcase build linux system -a "$app_name"
             if [ $? -eq 0 ]; then
-                briefcase package "$app_name" --target system
+                briefcase package linux system -a "$app_name"
             fi
             ;;
         windows)
             echo "🪟 Building Windows application..."
-            briefcase build "$app_name"
+            briefcase build windows app -a "$app_name"
             if [ $? -eq 0 ]; then
-                briefcase package "$app_name"
+                briefcase package windows app -a "$app_name"
             fi
             ;;
         macos)
@@ -72,15 +72,15 @@ build_app() {
             if [ "$signing_mode" = "signed" ]; then
                 # For signed builds, we'll handle signing separately
                 # First build without signing
-                briefcase build "$app_name"
+                briefcase build macos app -a "$app_name"
                 if [ $? -eq 0 ]; then
                     echo "✅ Built $app_name successfully (signing will be handled separately)"
                 fi
             else
                 # Unsigned build
-                briefcase build "$app_name"
+                briefcase build macos app -a "$app_name"
                 if [ $? -eq 0 ]; then
-                    briefcase package "$app_name"
+                    briefcase package macos app -a "$app_name"
                 fi
             fi
             ;;
