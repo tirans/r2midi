@@ -23,7 +23,7 @@ if [ -f "/tmp/signing_identities.sh" ]; then
     echo "🔍 Available identities:"
     echo "  - APPLICATION_SIGNING_IDENTITY: ${APPLICATION_SIGNING_IDENTITY:-'Not set'}"
     echo "  - INSTALLER_SIGNING_IDENTITY: ${INSTALLER_SIGNING_IDENTITY:-'Not set'}"
-    
+
     # Debug: Show all available certificates
     echo "🔍 All certificates in keychain:"
     if [ -n "${TEMP_KEYCHAIN:-}" ]; then
@@ -57,7 +57,7 @@ if [ -z "${INSTALLER_SIGNING_IDENTITY:-}" ]; then
     echo "  1. Developer ID Application certificate (for app signing) - ✅ Available"
     echo "  2. Developer ID Installer certificate (for PKG signing) - ❌ Missing"
     echo ""
-    
+
     # Check if they have the wrong type of certificate
     if [ -n "${TEMP_KEYCHAIN:-}" ] && security find-identity -v "$TEMP_KEYCHAIN" | grep -q "3rd Party Mac Developer Installer"; then
         echo "⚠️ Certificate Type Issue:"
@@ -73,7 +73,7 @@ if [ -z "${INSTALLER_SIGNING_IDENTITY:-}" ]; then
         echo "  - Add Developer ID Installer certificate to your GitHub secrets"
         echo "  - Or use DMG-only distribution (fallback will handle this)"
     fi
-    
+
     echo ""
     echo "🔗 More info: https://developer.apple.com/support/certificates/"
     exit 1
@@ -107,7 +107,7 @@ fi
 get_bundle_id() {
     local app_path="$1"
     local info_plist="$app_path/Contents/Info.plist"
-    
+
     if [ -f "$info_plist" ]; then
         /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$info_plist" 2>/dev/null || echo "com.r2midi.app"
     else
@@ -119,24 +119,24 @@ get_bundle_id() {
 sign_app_bundle() {
     local app_path="$1"
     local app_name=$(basename "$app_path")
-    
+
     echo "🔐 Signing $app_name using inside-out approach..."
-    
+
     if [ ! -d "$app_path" ]; then
         echo "❌ Error: App bundle not found: $app_path"
         return 1
     fi
-    
+
     local bundle_id=$(get_bundle_id "$app_path")
     echo "📋 Bundle ID: $bundle_id"
-    
+
     # Step 1: Remove any existing signatures
     echo "🧹 Removing existing signatures..."
     find "$app_path" -name "_CodeSignature" -type d -exec rm -rf {} + 2>/dev/null || true
-    
+
     # Step 2: Sign all dynamic libraries and frameworks (inside-out)
     echo "📦 Signing embedded libraries and frameworks..."
-    
+
     # Sign .dylib and .so files
     find "$app_path" -type f \( -name "*.dylib" -o -name "*.so" \) | while read lib; do
         if [ -f "$lib" ]; then
@@ -144,7 +144,7 @@ sign_app_bundle() {
             codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp "$lib" || echo "⚠️ Warning: Failed to sign $(basename "$lib")"
         fi
     done
-    
+
     # Sign frameworks (deepest first)
     find "$app_path" -name "*.framework" -type d | sort -r | while read framework; do
         if [ -d "$framework" ]; then
@@ -152,7 +152,7 @@ sign_app_bundle() {
             codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp "$framework" || echo "⚠️ Warning: Failed to sign $(basename "$framework")"
         fi
     done
-    
+
     # Step 3: Sign nested applications
     find "$app_path" -name "*.app" -not -path "$app_path" | while read nested_app; do
         if [ -d "$nested_app" ]; then
@@ -164,7 +164,7 @@ sign_app_bundle() {
             fi
         fi
     done
-    
+
     # Step 4: Sign executables in Contents/MacOS
     if [ -d "$app_path/Contents/MacOS" ]; then
         find "$app_path/Contents/MacOS" -type f -perm +111 | while read executable; do
@@ -174,13 +174,13 @@ sign_app_bundle() {
             fi
         done
     fi
-    
+
     # Step 5: Sign the main app bundle (outermost layer)
     echo "🎯 Signing main app bundle: $app_name"
-    
+
     # Try signing with entitlements first, fall back to without if it fails
     local signing_success=false
-    
+
     if [ -n "$ENTITLEMENTS_FILE" ]; then
         echo "Attempting to sign with entitlements: $ENTITLEMENTS_FILE"
         if codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp --entitlements "$ENTITLEMENTS_FILE" "$app_path" 2>/dev/null; then
@@ -201,12 +201,12 @@ sign_app_bundle() {
             echo "✅ Signed successfully without entitlements"
         fi
     fi
-    
+
     if [ "$signing_success" != "true" ]; then
         echo "❌ Failed to sign app bundle: $app_name"
         return 1
     fi
-    
+
     # Step 6: Verify the signature
     echo "✅ Verifying signature for $app_name..."
     codesign --verify --deep --strict --verbose=2 "$app_path"
@@ -214,11 +214,11 @@ sign_app_bundle() {
         echo "❌ Signature verification failed for $app_name"
         return 1
     fi
-    
+
     # Check Gatekeeper compatibility
     echo "🔍 Checking Gatekeeper compatibility..."
     spctl --assess --type exec --verbose "$app_path" || echo "⚠️ Warning: Gatekeeper assessment failed (may pass after notarization)"
-    
+
     echo "✅ Successfully signed $app_name"
     return 0
 }
@@ -228,29 +228,48 @@ create_signed_pkg() {
     local app_path="$1"
     local app_name=$(basename "$app_path" .app)
     local pkg_name="$app_name-$VERSION.pkg"
-    
+
     echo "📦 Creating signed PKG installer for $app_name..."
     echo "🎯 This is the PRIMARY distribution format"
-    
+
     # Create temporary directory for PKG contents
     local temp_pkg_dir=$(mktemp -d)
     local pkg_root="$temp_pkg_dir/pkg_root/Applications"
     mkdir -p "$pkg_root"
-    
+
     # Copy app to PKG root
     echo "📁 Copying app to installer payload..."
     cp -R "$app_path" "$pkg_root/"
-    
+
     # Get bundle ID for package identifier
     local bundle_id=$(get_bundle_id "$app_path")
     local pkg_identifier="${bundle_id}.installer"
-    
+
     echo "📋 Package Identifier: $pkg_identifier"
     echo "📋 Install Location: /Applications"
     echo "📋 Version: $VERSION"
-    
+
     # Create the PKG with detailed configuration
     echo "🔨 Building PKG installer..."
+
+    # Add progress indicator
+    echo "⏳ Starting PKG build process (this may take several minutes)..."
+
+    # Create a background process to show progress while pkgbuild runs
+    (
+        i=0
+        while true; do
+            i=$((i+1))
+            echo -ne "\r⏳ PKG build in progress... ($i seconds elapsed)"
+            sleep 1
+        done
+    ) &
+    PROGRESS_PID=$!
+
+    # Ensure we kill the progress indicator when this function exits
+    trap "kill $PROGRESS_PID 2>/dev/null || true" EXIT
+
+    # Run pkgbuild with verbose output
     pkgbuild \
         --root "$temp_pkg_dir/pkg_root" \
         --install-location "/" \
@@ -258,18 +277,24 @@ create_signed_pkg() {
         --version "$VERSION" \
         --timestamp \
         --sign "$INSTALLER_SIGNING_IDENTITY" \
+        --verbose \
         "$pkg_name"
-    
+
+    # Capture the result
     local result=$?
-    
+
+    # Kill the progress indicator
+    kill $PROGRESS_PID 2>/dev/null || true
+    echo -e "\r✅ PKG build completed after $i seconds                  "
+
     # Clean up temporary directory
     rm -rf "$temp_pkg_dir"
-    
+
     if [ $result -ne 0 ]; then
         echo "❌ Failed to create PKG installer"
         return 1
     fi
-    
+
     # Verify the PKG signature
     echo "🔍 Verifying PKG signature..."
     pkgutil --check-signature "$pkg_name"
@@ -278,11 +303,11 @@ create_signed_pkg() {
     else
         echo "⚠️ Warning: PKG signature verification failed"
     fi
-    
+
     # Test PKG with spctl
     echo "🔍 Testing PKG with Gatekeeper..."
     spctl --assess --type install --verbose "$pkg_name" || echo "⚠️ Warning: Gatekeeper assessment failed (may pass after notarization)"
-    
+
     echo "✅ Created signed PKG installer: $pkg_name"
     return 0
 }
@@ -292,21 +317,21 @@ create_optional_dmg() {
     local app_path="$1"
     local app_name=$(basename "$app_path" .app)
     local dmg_name="$app_name-$VERSION.dmg"
-    
+
     echo "💽 Creating optional DMG for $app_name..."
     echo "ℹ️ DMG is secondary - PKG is the primary distribution format"
-    
+
     # Create temporary directory for DMG contents
     local temp_dmg_dir=$(mktemp -d)
     local dmg_contents="$temp_dmg_dir/dmg_contents"
     mkdir -p "$dmg_contents"
-    
+
     # Copy app to DMG contents
     cp -R "$app_path" "$dmg_contents/"
-    
+
     # Create Applications symlink
     ln -s /Applications "$dmg_contents/Applications"
-    
+
     # Add installation note
     cat > "$dmg_contents/INSTALLATION_NOTE.txt" << EOF
 Installation Instructions
@@ -320,29 +345,29 @@ Manual Installation:
 
 The .pkg installer is the preferred installation method.
 EOF
-    
+
     # Create the DMG using hdiutil
     echo "📦 Creating disk image..."
     hdiutil create -format UDZO -srcfolder "$dmg_contents" -volname "$app_name $VERSION" "$dmg_name"
-    
+
     if [ $? -ne 0 ]; then
         echo "❌ Failed to create DMG"
         rm -rf "$temp_dmg_dir"
         return 1
     fi
-    
+
     # Clean up temporary directory
     rm -rf "$temp_dmg_dir"
-    
+
     # Sign the DMG
     echo "🔐 Signing DMG: $dmg_name"
     codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --timestamp "$dmg_name"
-    
+
     if [ $? -ne 0 ]; then
         echo "❌ Failed to sign DMG"
         return 1
     fi
-    
+
     echo "✅ Created optional DMG: $dmg_name"
     return 0
 }
@@ -351,9 +376,30 @@ EOF
 notarize_file() {
     local file_path="$1"
     local file_name=$(basename "$file_path")
-    
+
     echo "📤 Submitting $file_name for notarization..."
-    
+    echo "⏳ This process can take 5-45 minutes. Progress will be shown below..."
+
+    # Create a background process to show progress during notarization
+    (
+        i=0
+        while true; do
+            i=$((i+1))
+            minutes=$((i / 60))
+            seconds=$((i % 60))
+            if [ $minutes -gt 0 ]; then
+                echo -ne "\r⏳ Notarization in progress... (${minutes}m ${seconds}s elapsed)"
+            else
+                echo -ne "\r⏳ Notarization in progress... (${seconds}s elapsed)"
+            fi
+            sleep 1
+        done
+    ) &
+    NOTARIZE_PROGRESS_PID=$!
+
+    # Ensure we kill the progress indicator when this function exits
+    trap "kill $NOTARIZE_PROGRESS_PID 2>/dev/null || true" EXIT
+
     # Submit for notarization using notarytool
     local submit_output
     submit_output=$(xcrun notarytool submit "$file_path" \
@@ -361,44 +407,48 @@ notarize_file() {
         --password "$APPLE_ID_PASSWORD" \
         --team-id "$TEAM_ID" \
         --wait \
-        --timeout 45m \
+        --timeout 30m \
         2>&1)
-    
+
+    # Kill the progress indicator
+    kill $NOTARIZE_PROGRESS_PID 2>/dev/null || true
+    echo -e "\r✅ Notarization request completed                                    "
+
     local exit_code=$?
     echo "Notarization output:"
     echo "$submit_output"
-    
+
     # Check if notarization was successful
     if [ $exit_code -eq 0 ] && echo "$submit_output" | grep -q "status: Accepted"; then
         echo "✅ Notarization successful for $file_name"
-        
+
         # Staple the notarization ticket
         echo "📎 Stapling notarization ticket..."
         xcrun stapler staple "$file_path"
-        
+
         if [ $? -eq 0 ]; then
             echo "✅ Successfully stapled $file_name"
-            
+
             # Verify stapling
             echo "🔍 Verifying stapled ticket..."
             xcrun stapler validate "$file_path"
-            
+
             # Final Gatekeeper check
             echo "🔍 Final Gatekeeper assessment..."
             spctl --assess --type install "$file_path" && echo "✅ Gatekeeper accepts $file_name"
-            
+
         else
             echo "⚠️ Warning: Failed to staple $file_name, but notarization succeeded"
         fi
-        
+
         return 0
     else
         echo "❌ Notarization failed for $file_name"
-        
+
         # Try to extract submission ID for detailed log
         local submission_id
         submission_id=$(echo "$submit_output" | grep -o 'id: [a-f0-9-]*' | cut -d' ' -f2 | head -1)
-        
+
         if [ -n "$submission_id" ]; then
             echo "📋 Getting detailed notarization log for submission: $submission_id"
             xcrun notarytool log "$submission_id" \
@@ -406,7 +456,7 @@ notarize_file() {
                 --password "$APPLE_ID_PASSWORD" \
                 --team-id "$TEAM_ID"
         fi
-        
+
         return 1
     fi
 }
@@ -474,16 +524,16 @@ for app_bundle in "${app_bundles[@]}"; do
     if [ -d "$app_bundle" ]; then
         app_name=$(basename "$app_bundle" .app)
         echo "📱 Processing app bundle: $app_name ($app_bundle)"
-        
+
         # Step 1: Sign the app bundle
         if sign_app_bundle "$app_bundle"; then
             echo "✅ Successfully signed: $app_bundle"
-            
+
             # Step 2: Create PKG installer (PRIMARY FOCUS)
             echo "🎯 Creating PKG installer (primary distribution format)..."
             if create_signed_pkg "$app_bundle"; then
                 pkg_file="$app_name-$VERSION.pkg"
-                
+
                 # Step 3: Notarize the PKG
                 if notarize_file "$pkg_file"; then
                     # Move to artifacts
@@ -498,27 +548,32 @@ for app_bundle in "${app_bundles[@]}"; do
                 failed_items+=("PKG creation for $app_name")
                 echo "❌ Failed to create PKG for $app_name"
             fi
-            
-            # Step 4: Create optional DMG (secondary)
-            echo "💽 Creating optional DMG (secondary distribution format)..."
-            if create_optional_dmg "$app_bundle"; then
-                dmg_file="$app_name-$VERSION.dmg"
-                
-                # Notarize the DMG
-                if notarize_file "$dmg_file"; then
-                    # Move to artifacts
-                    mv "$dmg_file" artifacts/
-                    successful_dmgs+=("$dmg_file")
-                    echo "✅ DMG ready: artifacts/$dmg_file"
+
+            # Step 4: Create optional DMG (secondary) - Skip in production if PKG succeeded
+            if [ "$BUILD_TYPE" = "production" ] && [ ${#successful_pkgs[@]} -gt 0 ]; then
+                echo "💽 Skipping DMG creation in production build (PKG is primary format)"
+                echo "ℹ️ This optimization reduces build time significantly"
+            else
+                echo "💽 Creating optional DMG (secondary distribution format)..."
+                if create_optional_dmg "$app_bundle"; then
+                    dmg_file="$app_name-$VERSION.dmg"
+
+                    # Notarize the DMG
+                    if notarize_file "$dmg_file"; then
+                        # Move to artifacts
+                        mv "$dmg_file" artifacts/
+                        successful_dmgs+=("$dmg_file")
+                        echo "✅ DMG ready: artifacts/$dmg_file"
+                    else
+                        echo "⚠️ Warning: Failed to notarize DMG for $app_name (not critical)"
+                        # Don't add to failed_items since DMG is optional
+                    fi
                 else
-                    echo "⚠️ Warning: Failed to notarize DMG for $app_name (not critical)"
+                    echo "⚠️ Warning: Failed to create DMG for $app_name (not critical)"
                     # Don't add to failed_items since DMG is optional
                 fi
-            else
-                echo "⚠️ Warning: Failed to create DMG for $app_name (not critical)"
-                # Don't add to failed_items since DMG is optional
             fi
-            
+
         else
             failed_items+=("Signing for $app_name")
             echo "❌ Failed to sign: $app_bundle"
