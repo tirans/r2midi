@@ -172,27 +172,6 @@ EOF
     fi
 }
 
-# Function to ensure clean working tree
-ensure_clean_working_tree() {
-    echo "🧹 Ensuring clean working tree..."
-    
-    # Check for any uncommitted changes
-    if ! git diff --quiet || ! git diff --staged --quiet; then
-        echo "⚠️ Found uncommitted changes, staging all modified files..."
-        
-        # Stage all modified files
-        git add -A
-        
-        # Check if there are changes to commit
-        if ! git diff --staged --quiet; then
-            echo "📝 Committing uncommitted changes..."
-            git commit -m "chore: commit pending changes before version update [skip ci]"
-        fi
-    fi
-    
-    echo "✅ Working tree is clean"
-}
-
 # Improved push function with better retry logic
 push_with_retry() {
     local max_retries=5
@@ -201,9 +180,6 @@ push_with_retry() {
     
     for attempt in $(seq 1 $max_retries); do
         echo "🔄 Push attempt $attempt of $max_retries..."
-        
-        # Ensure we have a clean working tree before attempting push
-        ensure_clean_working_tree
         
         # First, try to sync with remote
         echo "📥 Fetching latest changes from remote..."
@@ -218,59 +194,59 @@ push_with_retry() {
         if [ -n "$REMOTE" ] && [ "$LOCAL" != "$REMOTE" ]; then
             echo "📦 Local branch is behind remote, attempting rebase..."
             
-            # Ensure clean state before rebase
-            ensure_clean_working_tree
-            
             # Try to rebase our changes onto the latest remote
             if git rebase "origin/$CURRENT_BRANCH"; then
                 echo "✅ Successfully rebased onto latest remote changes"
             else
-                echo "❌ Rebase failed, checking for conflicts..."
+                echo "❌ Rebase failed, likely due to conflicts"
                 
                 # Check if there are conflicts
                 if git status --porcelain | grep -q "^UU\|^AA\|^DD"; then
-                    echo "🔧 Attempting to resolve version conflicts..."
+                    echo "🔧 Attempting to auto-resolve version conflicts..."
                     
-                    # For version files, always use our version (the newer one)
+                    # Try to auto-resolve conflicts in our modified files
+                    local conflict_resolved=true
                     for file in server/version.py pyproject.toml CHANGELOG.md; do
                         if [ -f "$file" ] && git status --porcelain | grep -q "^UU.*$file"; then
-                            echo "🔧 Resolving conflict in $file (using our version)..."
-                            git checkout --ours "$file"
+                            echo "🔧 Auto-resolving conflict in $file..."
+                            # Use our version (the working tree version)
                             git add "$file"
                         fi
                     done
                     
-                    # Try to continue rebase
+                    # Continue rebase if all conflicts are resolved
                     if git rebase --continue; then
-                        echo "✅ Successfully resolved conflicts and continued rebase"
+                        echo "✅ Auto-resolved conflicts and continued rebase"
                     else
-                        echo "❌ Could not continue rebase, aborting..."
+                        echo "❌ Could not auto-resolve conflicts, aborting rebase"
                         git rebase --abort
-                        
-                        # Force push if this is the last attempt and we're dealing with version conflicts
+                        conflict_resolved=false
+                    fi
+                    
+                    if [ "$conflict_resolved" = false ]; then
                         if [ $attempt -eq $max_retries ]; then
-                            echo "⚠️ Final attempt: Using merge strategy instead of rebase..."
-                            git pull origin "$CURRENT_BRANCH" --strategy=ours --no-edit
-                        else
-                            # Wait and retry
-                            local delay=$((base_delay * 2**(attempt-1)))
-                            if [ $delay -gt $max_delay ]; then
-                                delay=$max_delay
-                            fi
-                            echo "⏳ Waiting ${delay}s before retry..."
-                            sleep $delay
-                            continue
+                            echo "❌ Failed to resolve conflicts after $max_retries attempts"
+                            return 1
                         fi
+                        
+                        # Wait with exponential backoff and try again
+                        local delay=$((base_delay * 2**(attempt-1)))
+                        if [ $delay -gt $max_delay ]; then
+                            delay=$max_delay
+                        fi
+                        echo "⏳ Waiting ${delay}s before retry..."
+                        sleep $delay
+                        continue
                     fi
                 else
-                    echo "❌ Rebase failed without conflicts, aborting..."
+                    echo "❌ Rebase failed for unknown reasons"
                     git rebase --abort
                     
                     if [ $attempt -eq $max_retries ]; then
                         return 1
                     fi
                     
-                    # Wait and retry
+                    # Wait with exponential backoff and try again
                     local delay=$((base_delay * 2**(attempt-1)))
                     if [ $delay -gt $max_delay ]; then
                         delay=$max_delay
@@ -308,10 +284,6 @@ push_with_retry() {
 }
 
 # Main version update workflow
-
-# First, ensure we have a clean working tree
-ensure_clean_working_tree
-
 echo "🔍 Getting current version..."
 CURRENT_VERSION=$(get_current_version)
 echo "Current version: $CURRENT_VERSION"
