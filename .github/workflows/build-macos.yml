@@ -90,34 +90,64 @@ jobs:
         id: config
         shell: bash
         run: |
+          # Function to extract version from pyproject.toml with multiple fallbacks
+          extract_version() {
+            # Method 1: Try tomllib (Python 3.11+)
+            local version=$(python3 -c "
+import tomllib
+with open('pyproject.toml', 'rb') as f:
+    config = tomllib.load(f)
+print(config['project']['version'])
+" 2>/dev/null)
+            
+            if [ -n "$version" ] && [ "$version" != "" ]; then
+              echo "$version"
+              return 0
+            fi
+            
+            # Method 2: Try toml library fallback
+            version=$(python3 -c "
+import toml
+with open('pyproject.toml', 'r') as f:
+    config = toml.load(f)
+print(config['project']['version'])
+" 2>/dev/null)
+            
+            if [ -n "$version" ] && [ "$version" != "" ]; then
+              echo "$version"
+              return 0
+            fi
+            
+            # Method 3: Simple regex fallback
+            version=$(grep -E '^version = ".*"' pyproject.toml | sed 's/version = "\(.*\)"/\1/' 2>/dev/null)
+            
+            if [ -n "$version" ] && [ "$version" != "" ]; then
+              echo "$version"
+              return 0
+            fi
+            
+            # Method 4: Default fallback
+            echo "0.1.0"
+          }
+          
           # Determine version and build type based on trigger
           if [ "${{ github.event_name }}" = "workflow_call" ]; then
             VERSION="${{ inputs.version }}"
             BUILD_TYPE="${{ inputs.build-type }}"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             # Extract version from pyproject.toml for manual dispatch
-            VERSION=$(python3 -c "
-            try:
-                import tomllib
-                with open('pyproject.toml', 'rb') as f:
-                    config = tomllib.load(f)
-                print(config['project']['version'])
-            except:
-                print('0.1.0')
-            ")
+            VERSION=$(extract_version)
             BUILD_TYPE="${{ inputs.build-type }}"
           else
             # For push/PR triggers, extract version from pyproject.toml
-            VERSION=$(python3 -c "
-            try:
-                import tomllib
-                with open('pyproject.toml', 'rb') as f:
-                    config = tomllib.load(f)
-                print(config['project']['version'])
-            except:
-                print('0.1.0')
-            ")
+            VERSION=$(extract_version)
             BUILD_TYPE="${{ env.DEFAULT_BUILD_TYPE }}"
+          fi
+          
+          # Validate extracted version
+          if [ -z "$VERSION" ] || [ "$VERSION" = "" ]; then
+            echo "⚠️ Warning: Could not extract version, using default"
+            VERSION="0.1.0"
           fi
           
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -126,9 +156,10 @@ jobs:
           
           echo "📋 Build Configuration:"
           echo "  Version: $VERSION"
-          echo "  Build Type: $BUILD_TYPE" 
+          echo "  Build Type: $BUILD_TYPE"
           echo "  Runner: ${{ inputs.runner-type || 'self-hosted' }}"
           echo "  Trigger: ${{ github.event_name }}"
+          echo "  Branch: ${{ github.ref_name }}"
 
       - name: Setup Python and Environment
         shell: bash
