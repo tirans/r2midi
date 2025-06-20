@@ -134,24 +134,68 @@ sign_app_bundle() {
     echo "🧹 Removing existing signatures..."
     find "$app_path" -name "_CodeSignature" -type d -exec rm -rf {} + 2>/dev/null || true
 
-    # Step 2: Sign all dynamic libraries and frameworks (inside-out)
-    echo "📦 Signing embedded libraries and frameworks..."
+    # Step 2: Sign all dynamic libraries and frameworks (inside-out) - OPTIMIZED
+    echo "📦 Signing embedded libraries and frameworks (optimized batch process)..."
 
-    # Sign .dylib and .so files
-    find "$app_path" -type f \( -name "*.dylib" -o -name "*.so" \) | while read lib; do
-        if [ -f "$lib" ]; then
-            echo "🔗 Signing library: $(basename "$lib")"
-            codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp "$lib" || echo "⚠️ Warning: Failed to sign $(basename "$lib")"
-        fi
-    done
+    # Collect all libraries and frameworks for batch processing
+    local libs_to_sign=()
+    local frameworks_to_sign=()
 
-    # Sign frameworks (deepest first)
-    find "$app_path" -name "*.framework" -type d | sort -r | while read framework; do
-        if [ -d "$framework" ]; then
-            echo "🔗 Signing framework: $(basename "$framework")"
-            codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp "$framework" || echo "⚠️ Warning: Failed to sign $(basename "$framework")"
-        fi
-    done
+    # Find .dylib and .so files
+    while IFS= read -r -d '' lib; do
+        libs_to_sign+=("$lib")
+    done < <(find "$app_path" -type f \( -name "*.dylib" -o -name "*.so" \) -print0 2>/dev/null)
+
+    # Find frameworks (deepest first)
+    while IFS= read -r -d '' framework; do
+        frameworks_to_sign+=("$framework")
+    done < <(find "$app_path" -name "*.framework" -type d -print0 2>/dev/null | sort -rz)
+
+    # Sign libraries in parallel batches (limit to 4 concurrent to avoid overwhelming the system)
+    if [ ${#libs_to_sign[@]} -gt 0 ]; then
+        echo "🔗 Signing ${#libs_to_sign[@]} libraries in optimized batches..."
+        local batch_size=4
+        local batch_count=0
+
+        for lib in "${libs_to_sign[@]}"; do
+            if [ -f "$lib" ]; then
+                (
+                    codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp "$lib" 2>/dev/null || \
+                    echo "⚠️ Warning: Failed to sign $(basename "$lib")"
+                ) &
+
+                batch_count=$((batch_count + 1))
+                if [ $((batch_count % batch_size)) -eq 0 ]; then
+                    wait  # Wait for current batch to complete
+                fi
+            fi
+        done
+        wait  # Wait for any remaining processes
+        echo "✅ Library signing completed"
+    fi
+
+    # Sign frameworks in parallel batches
+    if [ ${#frameworks_to_sign[@]} -gt 0 ]; then
+        echo "🔗 Signing ${#frameworks_to_sign[@]} frameworks in optimized batches..."
+        local batch_size=2  # Smaller batch size for frameworks as they're larger
+        local batch_count=0
+
+        for framework in "${frameworks_to_sign[@]}"; do
+            if [ -d "$framework" ]; then
+                (
+                    codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp "$framework" 2>/dev/null || \
+                    echo "⚠️ Warning: Failed to sign $(basename "$framework")"
+                ) &
+
+                batch_count=$((batch_count + 1))
+                if [ $((batch_count % batch_size)) -eq 0 ]; then
+                    wait  # Wait for current batch to complete
+                fi
+            fi
+        done
+        wait  # Wait for any remaining processes
+        echo "✅ Framework signing completed"
+    fi
 
     # Step 3: Sign nested applications
     find "$app_path" -name "*.app" -not -path "$app_path" | while read nested_app; do
@@ -260,7 +304,20 @@ create_signed_pkg() {
         i=0
         while true; do
             i=$((i+1))
-            echo -ne "\r⏳ PKG build in progress... ($i seconds elapsed)"
+            minutes=$((i / 60))
+            seconds=$((i % 60))
+            if [ $minutes -gt 0 ]; then
+                echo -ne "\r⏳ PKG build in progress... (${minutes}m ${seconds}s elapsed)"
+            else
+                echo -ne "\r⏳ PKG build in progress... (${seconds}s elapsed)"
+            fi
+
+            # Add timeout check to prevent infinite hanging
+            if [ $i -gt 1800 ]; then  # 30 minutes timeout
+                echo -e "\n❌ PKG build timeout after 30 minutes - killing process"
+                pkill -f "pkgbuild.*$pkg_identifier" 2>/dev/null || true
+                exit 1
+            fi
             sleep 1
         done
     ) &
@@ -269,23 +326,73 @@ create_signed_pkg() {
     # Ensure we kill the progress indicator when this function exits
     trap "kill $PROGRESS_PID 2>/dev/null || true" EXIT
 
-    # Run pkgbuild with verbose output
-    pkgbuild \
-        --root "$temp_pkg_dir/pkg_root" \
-        --install-location "/" \
-        --identifier "$pkg_identifier" \
-        --version "$VERSION" \
-        --timestamp \
-        --sign "$INSTALLER_SIGNING_IDENTITY" \
-        --verbose \
-        "$pkg_name"
+    # Run pkgbuild with timeout using GNU timeout if available, otherwise use built-in timeout
+    echo "🔨 Starting pkgbuild with 30-minute timeout..."
+    local pkgbuild_start_time=$(date +%s)
 
-    # Capture the result
-    local result=$?
+    # Use timeout command to prevent hanging
+    if command -v timeout >/dev/null 2>&1; then
+        # GNU timeout available
+        timeout 1800 pkgbuild \
+            --root "$temp_pkg_dir/pkg_root" \
+            --install-location "/" \
+            --identifier "$pkg_identifier" \
+            --version "$VERSION" \
+            --timestamp \
+            --sign "$INSTALLER_SIGNING_IDENTITY" \
+            --verbose \
+            "$pkg_name"
+    else
+        # Fallback: use background process with timeout
+        pkgbuild \
+            --root "$temp_pkg_dir/pkg_root" \
+            --install-location "/" \
+            --identifier "$pkg_identifier" \
+            --version "$VERSION" \
+            --timestamp \
+            --sign "$INSTALLER_SIGNING_IDENTITY" \
+            --verbose \
+            "$pkg_name" &
+
+        local pkgbuild_pid=$!
+        local timeout_seconds=1800  # 30 minutes
+        local elapsed=0
+
+        while kill -0 $pkgbuild_pid 2>/dev/null; do
+            sleep 1
+            elapsed=$((elapsed + 1))
+            if [ $elapsed -gt $timeout_seconds ]; then
+                echo -e "\n❌ PKG build timeout after 30 minutes - terminating"
+                kill $pkgbuild_pid 2>/dev/null || true
+                wait $pkgbuild_pid 2>/dev/null || true
+                result=124  # timeout exit code
+                break
+            fi
+        done
+
+        if [ $elapsed -le $timeout_seconds ]; then
+            wait $pkgbuild_pid
+            result=$?
+        fi
+    fi
+
+    # Capture the result if not already set
+    if [ -z "${result:-}" ]; then
+        result=$?
+    fi
+
+    local pkgbuild_end_time=$(date +%s)
+    local pkgbuild_duration=$((pkgbuild_end_time - pkgbuild_start_time))
 
     # Kill the progress indicator
     kill $PROGRESS_PID 2>/dev/null || true
-    echo -e "\r✅ PKG build completed after $i seconds                  "
+
+    if [ $result -eq 124 ]; then
+        echo -e "\r❌ PKG build timed out after 30 minutes                    "
+        return 1
+    else
+        echo -e "\r✅ PKG build completed in ${pkgbuild_duration}s                    "
+    fi
 
     # Clean up temporary directory
     rm -rf "$temp_pkg_dir"
@@ -400,14 +507,15 @@ notarize_file() {
     # Ensure we kill the progress indicator when this function exits
     trap "kill $NOTARIZE_PROGRESS_PID 2>/dev/null || true" EXIT
 
-    # Submit for notarization using notarytool
+    # Submit for notarization using notarytool with optimized timeout
     local submit_output
+    echo "📤 Submitting for notarization (timeout: 20 minutes)..."
     submit_output=$(xcrun notarytool submit "$file_path" \
         --apple-id "$APPLE_ID" \
         --password "$APPLE_ID_PASSWORD" \
         --team-id "$TEAM_ID" \
         --wait \
-        --timeout 30m \
+        --timeout 20m \
         2>&1)
 
     # Kill the progress indicator
