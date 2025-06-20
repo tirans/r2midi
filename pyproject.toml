@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "r2midi"
-version = "0.1.172"
+version = "0.1.173"
 description = "MIDI 2.0 Patch Selection Application"
 authors = [
     {name = "R2MIDI Team", email = "example@example.com"}
@@ -57,7 +57,7 @@ dev = [
 [tool.briefcase]
 project_name = "R2MIDI"
 bundle = "com.r2midi"
-version = "0.1.172"
+version = "0.1.173"
 url = "https://github.com/tirans/r2midi"
 license = {text = "MIT"}
 author = "R2MIDI Team"
