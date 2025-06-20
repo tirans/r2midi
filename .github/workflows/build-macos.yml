@@ -31,6 +31,17 @@ on:
         required: true
   workflow_dispatch:
     inputs:
+
+      runner-type:
+        description: 'Runner type'
+        required: false
+        type: choice
+        options:
+          - self-hosted
+          - macos-13
+          - macos-14
+          - macos-latest
+        default: 'self-hosted'
       build-type:
         description: 'Build type'
         required: false
@@ -39,7 +50,7 @@ on:
           - dev
           - staging
           - production
-        default: 'dev'
+        default: 'production'
 
 jobs:
   build-macos-optimized:
