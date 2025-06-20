@@ -5,8 +5,32 @@ set -euo pipefail
 # This script allows you to test the PKG build process locally
 # Usage: ./scripts/test_pkg_build_locally.sh [version] [build_type]
 
-VERSION="${1:-0.1.181}"
-BUILD_TYPE="${2:-dev}"
+# Check for help flag first
+if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
+    echo "Usage: ./scripts/test_pkg_build_locally.sh [version] [build_type]"
+    echo ""
+    echo "Arguments:"
+    echo "  version     Application version (default: 0.1.182)"
+    echo "  build_type  Build type: dev, staging, production, release (default: release)"
+    echo ""
+    echo "Apple credentials (automatically loaded from app_config.json if available):"
+    echo "  The script will automatically load Apple credentials from:"
+    echo "  apple_credentials/config/app_config.json"
+    echo ""
+    echo "Environment variables (optional, override app_config.json):"
+    echo "  APPLE_ID              Apple ID for notarization"
+    echo "  APPLE_ID_PASSWORD     App-specific password for Apple ID"
+    echo "  APPLE_TEAM_ID         Apple Developer Team ID"
+    echo ""
+    echo "Examples:"
+    echo "  ./scripts/test_pkg_build_locally.sh                           # Use defaults (release build with app_config.json credentials)"
+    echo "  ./scripts/test_pkg_build_locally.sh 1.0.0 production         # Specific version and build type"
+    echo "  APPLE_ID=dev@example.com ./scripts/test_pkg_build_locally.sh  # Override credentials with environment variables"
+    exit 0
+fi
+
+VERSION="${1:-0.1.182}"
+BUILD_TYPE="${2:-release}"
 
 echo "🧪 R2MIDI Local PKG Build Test"
 echo "================================"
@@ -53,40 +77,40 @@ command_exists() {
 # Function to check prerequisites
 check_prerequisites() {
     print_step "Checking prerequisites..."
-    
+
     local missing_deps=()
-    
+
     # Check if we're on macOS
     if [[ "$OSTYPE" != "darwin"* ]]; then
         print_error "This script must be run on macOS"
         exit 1
     fi
-    
+
     # Check Python
     if ! command_exists python; then
         missing_deps+=("python")
     fi
-    
+
     # Check briefcase
     if ! python -c "import briefcase" 2>/dev/null; then
         missing_deps+=("briefcase")
     fi
-    
+
     # Check security command
     if ! command_exists security; then
         missing_deps+=("security")
     fi
-    
+
     # Check codesign
     if ! command_exists codesign; then
         missing_deps+=("codesign")
     fi
-    
+
     # Check productbuild
     if ! command_exists productbuild; then
         missing_deps+=("productbuild")
     fi
-    
+
     if [ ${#missing_deps[@]} -ne 0 ]; then
         print_error "Missing dependencies: ${missing_deps[*]}"
         echo ""
@@ -106,18 +130,52 @@ check_prerequisites() {
         done
         exit 1
     fi
-    
+
     print_success "All prerequisites available"
+}
+
+# Function to load Apple credentials from app_config.json
+load_apple_credentials() {
+    print_step "Loading Apple credentials..."
+
+    # Check if app_config.json exists
+    if [ -f "apple_credentials/config/app_config.json" ]; then
+        print_status $BLUE "Found app_config.json, loading Apple credentials..."
+
+        # Source the load-apple-credentials script
+        if [ -f ".github/scripts/load-apple-credentials.sh" ]; then
+            source .github/scripts/load-apple-credentials.sh
+
+            # Check if credentials were loaded successfully
+            if [ -n "${APPLE_ID_FINAL:-}" ] && [ -n "${APPLE_ID_PASSWORD_FINAL:-}" ] && [ -n "${APPLE_TEAM_ID_FINAL:-}" ]; then
+                # Export the credentials with the expected variable names
+                export APPLE_ID="$APPLE_ID_FINAL"
+                export APPLE_ID_PASSWORD="$APPLE_ID_PASSWORD_FINAL"
+                export APPLE_TEAM_ID="$APPLE_TEAM_ID_FINAL"
+
+                print_success "Apple credentials loaded from app_config.json"
+                echo "   Apple ID: $APPLE_ID"
+                echo "   Team ID: $APPLE_TEAM_ID"
+                echo "   App-specific password: [REDACTED]"
+            else
+                print_warning "Failed to load Apple credentials from app_config.json"
+            fi
+        else
+            print_warning "load-apple-credentials.sh script not found"
+        fi
+    else
+        print_warning "app_config.json not found, will use environment variables if available"
+    fi
 }
 
 # Function to check Apple Developer setup
 check_apple_setup() {
     print_step "Checking Apple Developer setup..."
-    
+
     # Check for certificates
     local app_certs=$(security find-identity -v -p codesigning | grep "Developer ID Application" | wc -l)
     local installer_certs=$(security find-identity -v | grep "Developer ID Installer" | wc -l)
-    
+
     if [ "$app_certs" -gt 0 ]; then
         print_success "Found $app_certs Developer ID Application certificate(s)"
         security find-identity -v -p codesigning | grep "Developer ID Application" | head -1
@@ -125,7 +183,7 @@ check_apple_setup() {
         print_warning "No Developer ID Application certificates found"
         echo "  This will use ad-hoc signing (development only)"
     fi
-    
+
     if [ "$installer_certs" -gt 0 ]; then
         print_success "Found $installer_certs Developer ID Installer certificate(s)"
         security find-identity -v | grep "Developer ID Installer" | head -1
@@ -134,7 +192,7 @@ check_apple_setup() {
         echo "  PKG creation will be limited or may fail"
         echo "  Consider using DMG distribution instead"
     fi
-    
+
     # Check for Apple credentials (optional for local testing)
     if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_ID_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
         print_success "Apple credentials configured for notarization"
@@ -148,11 +206,11 @@ check_apple_setup() {
 # Function to setup local certificates (if available)
 setup_certificates() {
     print_step "Setting up certificates..."
-    
+
     # Check if local certificate files exist
     if [ -f "apple_credentials/certificates/app_cert.p12" ] && [ -f "apple_credentials/config/app_config.json" ]; then
         print_success "Found local certificate files"
-        
+
         # Run the certificate setup script
         if [ -f ".github/scripts/setup-certificates.sh" ]; then
             print_status $BLUE "Running certificate setup..."
@@ -169,11 +227,11 @@ setup_certificates() {
 # Function to configure signing
 configure_signing() {
     print_step "Configuring signing and entitlements..."
-    
+
     # Make scripts executable
     chmod +x scripts/select_entitlements.py 2>/dev/null || true
     chmod +x scripts/configure_briefcase_signing.py 2>/dev/null || true
-    
+
     # Configure briefcase signing identity
     if [ -f "scripts/configure_briefcase_signing.py" ]; then
         print_status $BLUE "Setting up briefcase signing identity..."
@@ -181,7 +239,7 @@ configure_signing() {
     else
         print_warning "Briefcase signing configuration script not found"
     fi
-    
+
     # Select appropriate entitlements
     if [ -f "scripts/select_entitlements.py" ]; then
         print_status $BLUE "Selecting appropriate entitlements..."
@@ -194,10 +252,10 @@ configure_signing() {
 # Function to build applications
 build_applications() {
     print_step "Building applications..."
-    
+
     # Export Python path for briefcase
     export PYTHONPATH="${PWD}:${PYTHONPATH:-}"
-    
+
     # Build server app
     print_status $BLUE "Building server app..."
     if briefcase build macos app -a server; then
@@ -206,7 +264,7 @@ build_applications() {
         print_error "Server app build failed"
         return 1
     fi
-    
+
     # Build client app
     print_status $BLUE "Building client app..."
     if briefcase build macos app -a r2midi-client; then
@@ -215,18 +273,18 @@ build_applications() {
         print_error "Client app build failed"
         return 1
     fi
-    
+
     print_success "Both applications built successfully"
 }
 
 # Function to create PKG installers
 create_pkg_installers() {
     print_step "Creating PKG installers..."
-    
+
     # Check if we have the required credentials for full PKG creation
     if [ -z "${APPLE_ID:-}" ] || [ -z "${APPLE_ID_PASSWORD:-}" ] || [ -z "${APPLE_TEAM_ID:-}" ]; then
         print_warning "Apple credentials not set, creating unsigned PKG for testing"
-        
+
         # Create a simple test PKG without notarization
         create_test_pkg
     else
@@ -244,24 +302,24 @@ create_pkg_installers() {
 # Function to create a test PKG without notarization
 create_test_pkg() {
     print_status $BLUE "Creating test PKG installers..."
-    
+
     # Create artifacts directory
     mkdir -p artifacts
-    
+
     # Check if apps were built
     local server_app="build/server/macos/app/R2MIDI Server.app"
     local client_app="build/r2midi-client/macos/app/R2MIDI Client.app"
-    
+
     if [ ! -d "$server_app" ]; then
         print_error "Server app not found: $server_app"
         return 1
     fi
-    
+
     if [ ! -d "$client_app" ]; then
         print_error "Client app not found: $client_app"
         return 1
     fi
-    
+
     # Create simple PKG for server
     print_status $BLUE "Creating server PKG..."
     if productbuild --component "$server_app" /Applications "artifacts/R2MIDI-Server-${VERSION}-${BUILD_TYPE}.pkg"; then
@@ -269,7 +327,7 @@ create_test_pkg() {
     else
         print_error "Failed to create server PKG"
     fi
-    
+
     # Create simple PKG for client
     print_status $BLUE "Creating client PKG..."
     if productbuild --component "$client_app" /Applications "artifacts/R2MIDI-Client-${VERSION}-${BUILD_TYPE}.pkg"; then
@@ -282,10 +340,10 @@ create_test_pkg() {
 # Function to validate results
 validate_results() {
     print_step "Validating results..."
-    
+
     # Check for PKG files
     local pkg_count=$(find artifacts/ -name "*.pkg" 2>/dev/null | wc -l)
-    
+
     if [ "$pkg_count" -gt 0 ]; then
         print_success "$pkg_count PKG installer(s) created"
         echo ""
@@ -293,7 +351,7 @@ validate_results() {
         find artifacts/ -name "*.pkg" | while read pkg; do
             local size=$(du -h "$pkg" | cut -f1)
             echo "  📦 $(basename "$pkg") ($size)"
-            
+
             # Quick signature check
             if pkgutil --check-signature "$pkg" 2>/dev/null | grep -q "signed"; then
                 echo "     ✅ Signed"
@@ -305,7 +363,7 @@ validate_results() {
         print_error "No PKG files found"
         return 1
     fi
-    
+
     # Check app bundles
     echo ""
     echo "Built applications:"
@@ -317,39 +375,16 @@ validate_results() {
     fi
 }
 
-# Function to show usage instructions
-show_usage() {
-    echo "Usage: $0 [version] [build_type]"
-    echo ""
-    echo "Arguments:"
-    echo "  version     Application version (default: 0.1.181)"
-    echo "  build_type  Build type: dev, staging, production (default: dev)"
-    echo ""
-    echo "Environment variables (optional):"
-    echo "  APPLE_ID              Apple ID for notarization"
-    echo "  APPLE_ID_PASSWORD     App-specific password for Apple ID"
-    echo "  APPLE_TEAM_ID         Apple Developer Team ID"
-    echo ""
-    echo "Examples:"
-    echo "  $0                           # Use defaults"
-    echo "  $0 1.0.0 production         # Specific version and build type"
-    echo "  APPLE_ID=dev@example.com $0  # With Apple credentials"
-}
 
 # Main execution
 main() {
-    # Check for help flag
-    if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
-        show_usage
-        exit 0
-    fi
-    
     # Run the build process
     check_prerequisites
+    load_apple_credentials
     check_apple_setup
     setup_certificates
     configure_signing
-    
+
     if build_applications; then
         if create_pkg_installers; then
             validate_results
