@@ -49,8 +49,8 @@ on:
 
 jobs:
   build-macos:
-    name: Build macOS Apps (Signed & Notarized)
-    runs-on: ${{ vars.MACOS_RUNNER || 'macos-14' }}
+    name: Build macOS Apps (Signed & Notarized) - Runner: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
+    runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
     timeout-minutes: 60
     outputs:
       artifact-name: ${{ steps.upload.outputs.artifact-name }}
