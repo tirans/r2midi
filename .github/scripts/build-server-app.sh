@@ -207,42 +207,33 @@ import py2app
 import sys
 import os
 
-# Completely disable automatic detection
-os.environ['PY2APP_VERBOSE'] = '0'
+# Disable automatic recipes
+os.environ['PY2APP_DISABLE_QT_RECIPES'] = '1'
 
 APP = [os.path.join('..', '..', 'server', 'main.py')]
 
-# Only include exactly what we need, nothing automatic
+# Simple, reliable py2app options 
 OPTIONS = {
     'argv_emulation': False,
-    'site_packages': False,  # Don't include all site packages
-    'alias': False,
-    'semi_standalone': True,  # Don't try to include everything
     'includes': [
-        'server', 'server.main', 'fastapi', 'uvicorn', 'pydantic', 
-        'rtmidi', 'mido', 'httpx', 'dotenv', 'psutil', 'json', 'os', 
-        'sys', 'asyncio', 'logging', 'pathlib', 'typing'
+        'fastapi', 'uvicorn', 'pydantic', 'rtmidi', 'mido', 
+        'httpx', 'dotenv', 'psutil', 'json', 'os', 'sys', 'logging'
     ],
     'excludes': [
         'PyQt6', 'PyQt5', 'PySide6', 'PySide2', 'qt6', 'qt5', 'sip',
-        'tkinter', 'test', 'tests', 'unittest', 'doctest',
-        'matplotlib', 'numpy', 'scipy', 'pandas', 'jupyter',
-        'wx', 'gtk', 'kivy', 'pygame', 'pyglet'
+        'tkinter', 'matplotlib', 'numpy', 'scipy', 'wx', 'gtk', 'test'
     ],
     'plist': {
         'CFBundleName': 'R2MIDI Server',
-        'CFBundleDisplayName': 'R2MIDI Server', 
+        'CFBundleDisplayName': 'R2MIDI Server',
         'CFBundleIdentifier': 'com.tirans.m2midi.r2midi.server',
         'CFBundleVersion': '$VERSION',
         'CFBundleShortVersionString': '$VERSION',
     },
     'optimize': 0,
-    'strip': False,
-    'iconfile': None,
 }
 
 setup(
-    name='R2MIDI Server',
     app=APP,
     options={'py2app': OPTIONS},
     setup_requires=['py2app'],

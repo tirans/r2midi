@@ -23,6 +23,14 @@ find "$SCRIPTS_DIR" -name "*.sh" -type f | while read script; do
     fi
 done
 
+# Also make the test scripts in root executable
+for test_script in "test-qt-fixes.sh" "test-server-build.sh"; do
+    if [ -f "$test_script" ]; then
+        chmod +x "$test_script"
+        echo "✅ Made executable: $test_script"
+    fi
+done
+
 # Specifically ensure the new scripts are executable
 NEW_SCRIPTS=(
     "configure-build.sh"

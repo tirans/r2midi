@@ -25,10 +25,10 @@ if [ "$IS_M3_MAX" = "true" ]; then
     echo "🚀 M3 Max: Using $CPU_CORES cores for compilation"
 fi
 
-# AGGRESSIVE Qt isolation - Hide Qt packages from py2app
-echo "🔒 Setting up Qt isolation environment..."
+# AGGRESSIVE Qt isolation - Completely block Qt packages
+echo "🔒 Setting up complete Qt isolation environment..."
 
-# Create a custom Python path that excludes Qt packages
+# Save original Python path components
 ORIGINAL_PYTHONPATH=${PYTHONPATH:-""}
 ORIGINAL_PATH=${PATH}
 
@@ -36,30 +36,41 @@ ORIGINAL_PATH=${PATH}
 SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
 echo "📦 Site packages: $SITE_PACKAGES"
 
-# Create a temporary directory with only non-Qt packages
-TEMP_SITE_PACKAGES=$(mktemp -d)/site-packages-no-qt
-mkdir -p "$TEMP_SITE_PACKAGES"
+# Set PYTHONPATH to completely exclude the original site-packages
+# This prevents any Qt packages from being found
+export PYTHONPATH="../../:$(pwd)/../..:$ORIGINAL_PYTHONPATH"
 
-echo "🚫 Creating Qt-free environment..."
-# Copy all packages EXCEPT Qt-related ones
-for package in "$SITE_PACKAGES"/*; do
-    package_name=$(basename "$package")
-    if [[ ! "$package_name" =~ ^[Pp]y[Qq]t.*$ ]] && \
-       [[ ! "$package_name" =~ ^[Qq]t.*$ ]] && \
-       [[ ! "$package_name" =~ ^[Ss]ip.*$ ]] && \
-       [[ ! "$package_name" =~ ^[Pp]y[Ss]ide.*$ ]]; then
-        if [ -d "$package" ]; then
-            cp -R "$package" "$TEMP_SITE_PACKAGES/"
-        elif [ -f "$package" ]; then
-            cp "$package" "$TEMP_SITE_PACKAGES/"
-        fi
-    else
-        echo "  🚫 Excluding Qt package: $package_name"
-    fi
-done
+# Create a list of critical packages we need for the build
+echo "📦 Installing essential packages to virtual environment..."
 
-# Add our isolated site-packages to Python path
-export PYTHONPATH="$TEMP_SITE_PACKAGES:../../:$ORIGINAL_PYTHONPATH"
+# Create a minimal requirements file for just the server
+cat > requirements_server_only.txt << EOF
+fastapi>=0.115.12
+uvicorn>=0.34.2
+pydantic>=2.11.5
+python-rtmidi>=1.5.5
+mido>=1.3.0
+httpx>=0.28.1
+python-dotenv>=1.1.0
+psutil>=7.0.0
+py2app
+setuptools
+wheel
+EOF
+
+# Install only what we need in a clean way
+echo "🔧 Installing server dependencies without Qt contamination..."
+# First try with dependencies, but into isolated location
+python3 -m pip install --target temp_packages -r requirements_server_only.txt
+
+# Then remove any Qt packages that might have been pulled in as dependencies
+echo "🚫 Removing any Qt packages from isolated environment..."
+find temp_packages -name "*[Pp]y[Qq]t*" -type d -exec rm -rf {} + 2>/dev/null || true
+find temp_packages -name "*[Qq]t*" -type d -exec rm -rf {} + 2>/dev/null || true
+find temp_packages -name "*[Ss]ip*" -type d -exec rm -rf {} + 2>/dev/null || true
+
+# Add our clean package directory to the front of PYTHONPATH
+export PYTHONPATH="$(pwd)/temp_packages:$PYTHONPATH"
 
 # Set environment variables to disable Qt detection
 export PY2APP_DISABLE_QT_RECIPES=1
@@ -82,19 +93,26 @@ python3 -c "
 import sys
 qt_found = False
 for path in sys.path:
-    if 'qt' in path.lower() or 'pyqt' in path.lower():
-        print(f'⚠️ Qt path still in PYTHONPATH: {path}')
+    if 'pyqt' in path.lower() or ('site-packages' in path and 'temp_packages' not in path):
+        print(f'⚠️ System site-packages still in path: {path}')
         qt_found = True
 
 if not qt_found:
-    print('✅ No Qt paths found in Python path')
+    print('✅ No system site-packages found in Python path')
 
 # Try importing Qt to verify it's blocked
 try:
     import PyQt6
-    print('⚠️ PyQt6 still importable')
+    print('⚠️ PyQt6 still importable - will try --no-deps approach')
 except ImportError:
     print('✅ PyQt6 successfully blocked')
+
+# Verify our required packages are available
+try:
+    import fastapi, uvicorn, pydantic, rtmidi, mido, httpx
+    print('✅ All required server packages available')
+except ImportError as e:
+    print(f'⚠️ Missing required package: {e}')
 "
 
 # Create an extremely minimal setup.py that only includes server essentials
@@ -143,7 +161,6 @@ OPTIONS = {
     'strip': False,
     'compressed': False,
     'use_pythonpath': False,  # Don't use system PYTHONPATH
-    'recipe_plugins': [],     # Disable all recipe plugins
 }
 
 setup(
@@ -171,23 +188,21 @@ else
     python3 -c "import sys; [print(f'  {p}') for p in sys.path[:10]]"
     
     echo "🔍 Available packages in isolated environment:"
-    python3 -c "
-import os
-isolated_packages = '$TEMP_SITE_PACKAGES'
-if os.path.exists(isolated_packages):
-    packages = [f for f in os.listdir(isolated_packages) if not f.startswith('.')]
-    print(f'Found {len(packages)} packages:')
-    for pkg in sorted(packages)[:20]:  # Show first 20
-        print(f'  📦 {pkg}')
-else:
-    print('Isolated packages directory not found')
-"
+    if [ -d "temp_packages" ]; then
+        packages=$(ls temp_packages | wc -l)
+        echo "Found $packages packages in temp_packages:"
+        ls temp_packages | head -20 | while read pkg; do
+            echo "  📦 $pkg"
+        done
+    else
+        echo "temp_packages directory not found"
+    fi
     
     echo "📋 Build output directory contents:"
     ls -la . || true
     
     # Cleanup and exit
-    rm -rf "$TEMP_SITE_PACKAGES"
+    rm -rf temp_packages requirements_server_only.txt
     exit 1
 fi
 
@@ -204,7 +219,7 @@ else
     ls -la dist/ || echo "dist/ directory not found"
     
     # Cleanup and exit
-    rm -rf "$TEMP_SITE_PACKAGES"
+    rm -rf temp_packages requirements_server_only.txt
     exit 1
 fi
 
@@ -224,7 +239,7 @@ fi
 
 # Cleanup isolated environment
 echo "🧹 Cleaning up isolated environment..."
-rm -rf "$TEMP_SITE_PACKAGES"
+rm -rf temp_packages requirements_server_only.txt
 
 # Restore original environment
 export PYTHONPATH="$ORIGINAL_PYTHONPATH"
