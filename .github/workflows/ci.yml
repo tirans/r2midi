@@ -2,12 +2,6 @@ name: CI
 
 on:
   workflow_call:
-  push:
-    branches: [ master, develop ]
-    # Skip CI on version bump commits to avoid race conditions
-    # The version script adds [skip ci] to prevent triggering CI
-  pull_request:
-    branches: [ master, develop ]
   workflow_dispatch:
     inputs:
       skip_tests:
@@ -29,20 +23,20 @@ jobs:
     outputs:
       should_skip: ${{ steps.check.outputs.should_skip }}
       reason: ${{ steps.check.outputs.reason }}
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 2  # Need at least 2 commits to check the latest one
-      
+
       - name: Check skip conditions
         id: check
         run: |
           # Get the latest commit message
           COMMIT_MSG=$(git log -1 --pretty=%B)
           echo "Latest commit message: $COMMIT_MSG"
-          
+
           # Check for skip conditions
           if echo "$COMMIT_MSG" | grep -qE '\[skip ci\]|\[ci skip\]|\[skip actions\]|\[actions skip\]'; then
             echo "should_skip=true" >> $GITHUB_OUTPUT
@@ -71,7 +65,7 @@ jobs:
       needs.check-skip.outputs.should_skip != 'true' && 
       !inputs.skip_tests && 
       !contains(github.event.head_commit.message, '[skip tests]')
-      
+
     strategy:
       fail-fast: false
       matrix:
@@ -118,7 +112,7 @@ jobs:
         run: |
           # Set PYTHONPATH to include the project root
           export PYTHONPATH=$PWD:${PYTHONPATH:-}
-          
+
           # Run tests with coverage on Ubuntu (since we only use Python 3.12 now)
           if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
             # Use virtual display for PyQt6 tests
@@ -288,7 +282,7 @@ jobs:
         run: |
           echo "## 🔍 CI Results Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           # Check if CI was skipped
           if [[ "${{ needs.check-skip.outputs.should_skip }}" == "true" ]]; then
             echo "⏭️ **CI Status**: Skipped" >> $GITHUB_STEP_SUMMARY
@@ -297,7 +291,7 @@ jobs:
             echo "ℹ️ CI was intentionally skipped to avoid conflicts with version management or due to commit directives." >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
-          
+
           # Check individual job results
           if [[ "${{ needs.test.result }}" == "success" ]]; then
             echo "✅ **Tests**: All tests passed on Python 3.12 across all platforms" >> $GITHUB_STEP_SUMMARY
@@ -306,7 +300,7 @@ jobs:
           else
             echo "❌ **Tests**: Some tests failed" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           if [[ "${{ needs.lint.result }}" == "success" ]]; then
             echo "✅ **Code Quality**: No code quality issues found" >> $GITHUB_STEP_SUMMARY
           elif [[ "${{ needs.lint.result }}" == "skipped" ]]; then
@@ -314,19 +308,19 @@ jobs:
           else
             echo "⚠️ **Code Quality**: Issues found but build continues (report-only mode)" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           if [[ "${{ needs.security.result }}" == "success" ]]; then
             echo "✅ **Security**: No critical security issues detected" >> $GITHUB_STEP_SUMMARY
           else
             echo "⚠️ **Security**: Security scan completed with findings" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           if [[ "${{ needs.build-test.result }}" == "success" ]]; then
             echo "✅ **Build Test**: Build configuration validated on all platforms" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **Build Test**: Build configuration issues detected" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           # Overall status (lint is now report-only and doesn't affect build status)
           if [[ ("${{ needs.test.result }}" == "success" || "${{ needs.test.result }}" == "skipped") && 
                 "${{ needs.build-test.result }}" == "success" ]]; then
