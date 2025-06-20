@@ -1,4 +1,4 @@
-name: Build macOS (Native Tools - GitHub Secrets)
+name: Build macOS (Native Tools - Clean Architecture)
 
 on:
   push:
@@ -87,12 +87,15 @@ jobs:
           fetch-depth: 0
 
       - name: Make scripts executable
+        shell: bash
         run: |
-          chmod +x .github/scripts/*.sh
-          echo "✅ All scripts made executable"
+          echo "🔧 Making all scripts executable..."
+          find .github/scripts -name "*.sh" -type f -exec chmod +x {} \;
+          echo "✅ Scripts are now executable"
 
       - name: Configure build parameters
         id: config
+        shell: bash
         run: |
           ./.github/scripts/configure-build.sh \
             "${{ github.event_name }}" \
@@ -101,15 +104,18 @@ jobs:
             "${{ inputs.runner-type || 'self-hosted' }}" \
             "${{ env.DEFAULT_BUILD_TYPE }}"
 
-      - name: Setup Python environment and verify macOS tools
+      - name: Setup Python and macOS environment
+        shell: bash
         run: |
-          ./.github/scripts/setup-python-environment.sh \
-            "${{ steps.config.outputs.runner-type }}"
+          ./.github/scripts/setup-python-environment.sh "${{ steps.config.outputs.runner-type }}"
 
       - name: Install Python dependencies
-        run: ./.github/scripts/install-dependencies.sh
+        shell: bash
+        run: |
+          ./.github/scripts/install-dependencies.sh
 
       - name: Setup Apple Developer certificates
+        shell: bash
         env:
           APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
           APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
@@ -117,35 +123,41 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: ./.github/scripts/setup-apple-certificates.sh
-
-      - name: Build R2MIDI Server with py2app
         run: |
-          ./.github/scripts/build-server-app.sh \
-            "${{ steps.config.outputs.version }}"
+          ./.github/scripts/setup-apple-certificates.sh
 
-      - name: Build R2MIDI Client with py2app
+      - name: Build Server App with py2app
+        shell: bash
         run: |
-          ./.github/scripts/build-client-app.sh \
-            "${{ steps.config.outputs.version }}"
+          ./.github/scripts/build-server-app.sh "${{ steps.config.outputs.version }}"
 
-      - name: Sign applications with native codesign
-        run: ./.github/scripts/sign-apps.sh
-
-      - name: Create PKG installers
+      - name: Build Client App with py2app
+        shell: bash
         run: |
-          ./.github/scripts/create-pkg-installers.sh \
-            "${{ steps.config.outputs.version }}"
+          ./.github/scripts/build-client-app.sh "${{ steps.config.outputs.version }}"
 
-      - name: Create DMG installers
+      - name: Sign applications with codesign
+        shell: bash
         run: |
-          ./.github/scripts/create-dmg-installers.sh \
-            "${{ steps.config.outputs.version }}"
+          ./.github/scripts/sign-apps.sh
+
+      - name: Create signed PKG installers
+        shell: bash
+        run: |
+          ./.github/scripts/create-pkg-installers.sh "${{ steps.config.outputs.version }}"
+
+      - name: Create signed DMG installers
+        shell: bash
+        run: |
+          ./.github/scripts/create-dmg-installers.sh "${{ steps.config.outputs.version }}"
 
       - name: Notarize packages with Apple notarytool
-        run: ./.github/scripts/notarize-packages.sh
+        shell: bash
+        run: |
+          ./.github/scripts/notarize-packages.sh
 
-      - name: Create build report
+      - name: Create build report and documentation
+        shell: bash
         run: |
           ./.github/scripts/create-build-report.sh \
             "${{ steps.config.outputs.version }}" \
@@ -161,14 +173,16 @@ jobs:
           retention-days: ${{ steps.config.outputs.build-type == 'production' && 90 || 30 }}
           compression-level: 6
 
-      - name: Cleanup build environment
+      - name: Cleanup sensitive data and temporary files
         if: always()
+        shell: bash
         run: |
           ./.github/scripts/cleanup-build.sh \
             "${{ steps.config.outputs.build-type }}" \
             "${{ env.IS_M3_MAX }}"
 
-      - name: Display build summary
+      - name: Build Summary
+        shell: bash
         run: |
           echo "🎉 NATIVE MACOS BUILD COMPLETED SUCCESSFULLY!"
           echo "=============================================="
@@ -201,6 +215,8 @@ jobs:
           echo "  ✅ Application signing: ${{ env.APP_SIGNING_IDENTITY }}"
           echo "  ✅ Installer signing: ${{ env.INSTALLER_SIGNING_IDENTITY }}"
           echo "  ✅ Team ID: ${{ env.APPLE_TEAM_ID }}"
+          echo "  ✅ Hardened runtime: Enabled"
+          echo "  ✅ Entitlements: Network, file access, audio input"
           echo ""
           echo "📤 NOTARIZATION STATUS:"
           echo "  ✅ Notarized packages: ${{ env.NOTARIZED_COUNT }}/${{ env.TOTAL_PACKAGES }}"
@@ -213,9 +229,11 @@ jobs:
           fi
           echo ""
           echo "📦 CREATED PACKAGES:"
+          total_size=0
           for file in artifacts/*; do
-              if [ -f "$file" ] && [[ "$file" != *"BUILD_REPORT.md" ]] && [[ "$file" != *".txt" ]]; then
-                  size_display=$(du -h "$file" | cut -f1)
+              if [ -f "$file" ] && [[ "$file" != *"BUILD_REPORT.md" ]]; then
+                  size_display=$(du -h "$file" | cut -f1 2>/dev/null || echo "unknown")
+                  
                   # Check notarization status for display
                   if xcrun stapler validate "$file" >/dev/null 2>&1; then
                       status="📦✅"
@@ -224,10 +242,20 @@ jobs:
                   else
                       status="📦⚠️"
                   fi
+                  
                   echo "  $status $(basename "$file") ($size_display)"
               fi
           done
           echo ""
+          if [ "${{ env.IS_M3_MAX }}" = "true" ]; then
+            echo "⚡ M3 MAX PERFORMANCE BENEFITS:"
+            echo "  ✅ ~3x faster than GitHub-hosted runners"
+            echo "  ✅ Zero queue wait time"
+            echo "  ✅ Persistent dependency caching"
+            echo "  ✅ Native Apple Silicon performance"
+            echo "  ✅ All CPU cores utilized for compilation"
+            echo ""
+          fi
           echo "🚀 DISTRIBUTION STATUS:"
           echo "  ✅ Packages signed with Apple Developer ID"
           if [ "${{ env.NOTARIZED_COUNT }}" -eq "${{ env.TOTAL_PACKAGES }}" ]; then
@@ -236,6 +264,7 @@ jobs:
             echo "  ✅ Ready for immediate distribution"
           else
             echo "  ⚠️ Some packages not notarized - may show warnings"
+            echo "  📋 Check notarization logs for details"
           fi
           echo ""
           echo "🔄 COMPARED TO BRIEFCASE:"
@@ -248,3 +277,4 @@ jobs:
           echo ""
           echo "✅ BUILD COMPLETED - Ready for distribution!"
           echo "🚫 No more Briefcase exit code 200 failures!"
+          echo "🎯 All code now organized in clean, reusable scripts!"

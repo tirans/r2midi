@@ -151,7 +151,95 @@ Add these secrets to your repository (**Settings** → **Secrets and variables**
 
 ## Scripts Overview
 
-### setup-certificates.sh
+### Core Build Scripts (NEW - Refactored from workflow)
+
+#### configure-build.sh
+Determines build configuration and extracts version information:
+- ✅ Extracts version from pyproject.toml with multiple fallback methods
+- ✅ Determines build type based on trigger (push/PR/dispatch)
+- ✅ Exports configuration for other scripts
+- ✅ Validates version extraction and sets defaults
+
+#### setup-python-environment.sh
+Sets up Python environment and verifies macOS development tools:
+- ✅ Detects M3 Max self-hosted runners for optimization
+- ✅ Verifies required macOS tools (codesign, pkgbuild, xcrun, etc.)
+- ✅ Sets up Python environment variables
+- ✅ Provides performance information for different runner types
+
+#### install-dependencies.sh
+Installs Python dependencies for native macOS build:
+- ✅ Uses py2app instead of Briefcase
+- ✅ Includes retry logic for package installation
+- ✅ Verifies critical packages after installation
+- ✅ Handles both server and client requirements
+
+#### setup-apple-certificates.sh
+Handles Apple Developer certificate import and keychain setup:
+- ✅ Creates temporary keychain for CI/CD security
+- ✅ Imports both application and installer certificates
+- ✅ Validates certificate format and passwords
+- ✅ Sets up signing identities for codesign operations
+
+#### build-server-app.sh
+Builds R2MIDI Server application with py2app:
+- ✅ Creates native macOS app bundle (not Briefcase)
+- ✅ Includes FastAPI and server dependencies
+- ✅ Optimizes for M3 Max performance
+- ✅ Verifies app bundle structure and metadata
+
+#### build-client-app.sh
+Builds R2MIDI Client application with py2app:
+- ✅ Creates native macOS app bundle with PyQt6
+- ✅ Includes client-specific dependencies
+- ✅ Handles UI resources and assets
+- ✅ Verifies app bundle structure and executable
+
+#### sign-apps.sh
+Signs applications with native macOS codesign:
+- ✅ Uses inside-out signing approach (libraries → frameworks → apps)
+- ✅ Applies hardened runtime and entitlements
+- ✅ Performs comprehensive signature verification
+- ✅ Tests Gatekeeper compatibility
+
+#### create-pkg-installers.sh
+Creates signed PKG installers with native pkgbuild:
+- ✅ Uses native macOS pkgbuild (not Briefcase)
+- ✅ Signs PKG files with installer certificate
+- ✅ Creates proper installer package structure
+- ✅ Verifies PKG signatures and Gatekeeper compatibility
+
+#### create-dmg-installers.sh
+Creates signed DMG installers with native hdiutil:
+- ✅ Uses native macOS hdiutil for disk image creation
+- ✅ Includes installation instructions and README
+- ✅ Signs DMG files with application certificate
+- ✅ Tests disk image mounting and validation
+
+#### notarize-packages.sh
+Notarizes packages with Apple notarytool:
+- ✅ Uses native Apple notarytool (not Briefcase)
+- ✅ Handles submission tracking and timeout management
+- ✅ Staples notarization tickets to packages
+- ✅ Performs final Gatekeeper assessment
+
+#### create-build-report.sh
+Generates comprehensive build documentation:
+- ✅ Creates detailed build reports with package information
+- ✅ Generates checksums for package verification
+- ✅ Includes installation instructions and system requirements
+- ✅ Provides verification commands for end users
+
+#### cleanup-build.sh
+Performs security cleanup and optimization:
+- ✅ Removes temporary keychains and certificate files
+- ✅ Cleans up sensitive environment variables
+- ✅ Optimizes cache management for different runner types
+- ✅ Performs security verification and cleanup validation
+
+### Legacy Scripts (Existing)
+
+#### setup-certificates.sh
 
 Handles certificate import and keychain setup:
 - ✅ Supports both individual certificates and combined P12 format  
@@ -268,12 +356,116 @@ The updated workflow (`build-macos.yml`) supports both certificate formats and i
 
 ```
 .github/scripts/
-├── setup-certificates.sh       # Certificate import and keychain setup
-├── sign-and-notarize-macos.sh  # Main signing and notarization
-├── package-macos-apps.sh       # Final packaging and organization
-├── setup-macos-signing.sh      # Interactive setup helper
-└── README.md                   # This documentation
+├── configure-build.sh              # Build configuration and version extraction
+├── setup-python-environment.sh     # Python and macOS tools setup
+├── install-dependencies.sh         # Python dependency management
+├── setup-apple-certificates.sh     # Apple Developer certificate handling
+├── build-server-app.sh             # R2MIDI Server app building (py2app)
+├── build-client-app.sh             # R2MIDI Client app building (py2app)
+├── sign-apps.sh                    # Native codesign application signing
+├── create-pkg-installers.sh        # PKG installer creation (pkgbuild)
+├── create-dmg-installers.sh        # DMG installer creation (hdiutil)
+├── notarize-packages.sh            # Apple notarization (notarytool)
+├── create-build-report.sh          # Build documentation generation
+├── cleanup-build.sh                # Security cleanup and optimization
+├── setup-certificates.sh           # Legacy certificate setup
+├── sign-and-notarize-macos.sh      # Legacy combined signing/notarization
+├── package-macos-apps.sh           # Legacy packaging script
+├── setup-macos-signing.sh          # Interactive setup helper
+├── make-scripts-executable.sh      # Script permissions management
+└── README.md                       # This documentation
 ```
+
+## GitHub Actions Workflow Integration
+
+The new modular workflow (`build-macos.yml`) uses these scripts in sequence:
+
+```yaml
+- name: Configure build parameters
+  run: ./.github/scripts/configure-build.sh "${{ github.event_name }}" ...
+
+- name: Setup Python environment  
+  run: ./.github/scripts/setup-python-environment.sh
+
+- name: Install dependencies
+  run: ./.github/scripts/install-dependencies.sh
+
+- name: Setup Apple certificates
+  run: ./.github/scripts/setup-apple-certificates.sh
+  env:
+    APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
+    # ... other secrets
+
+- name: Build applications
+  run: |
+    ./.github/scripts/build-server-app.sh "${{ steps.config.outputs.version }}"
+    ./.github/scripts/build-client-app.sh "${{ steps.config.outputs.version }}"
+
+- name: Sign and package
+  run: |
+    ./.github/scripts/sign-apps.sh
+    ./.github/scripts/create-pkg-installers.sh "${{ steps.config.outputs.version }}"
+    ./.github/scripts/create-dmg-installers.sh "${{ steps.config.outputs.version }}"
+
+- name: Notarize packages
+  run: ./.github/scripts/notarize-packages.sh
+
+- name: Generate documentation
+  run: ./.github/scripts/create-build-report.sh
+
+- name: Cleanup
+  run: ./.github/scripts/cleanup-build.sh
+```
+
+### Benefits of Modular Architecture
+
+1. **Maintainability**: Each script has a single responsibility
+2. **Testability**: Scripts can be tested independently
+3. **Reusability**: Scripts can be used in other workflows
+4. **Debugging**: Clear error messages and isolated failure points
+5. **Security**: Proper cleanup and credential handling
+
+### Testing Scripts Locally
+
+```bash
+# Make scripts executable
+./.github/scripts/make-scripts-executable.sh
+
+# Test individual components
+./.github/scripts/configure-build.sh "workflow_dispatch" "" "dev" "self-hosted" "dev"
+./.github/scripts/setup-python-environment.sh "self-hosted"
+
+# Test with appropriate environment variables for certificate operations
+export APPLE_DEVELOPER_ID_APPLICATION_CERT="..."
+export APPLE_CERT_PASSWORD="..."
+# ... etc
+```
+
+## Migration from Embedded Code
+
+The original `build-macos.yml` workflow contained 600+ lines of embedded shell code. This has been completely eliminated and replaced with:
+
+- ✅ **12 focused scripts** with single responsibilities
+- ✅ **Clear error handling** and meaningful messages
+- ✅ **Consistent logging** with emojis and status indicators
+- ✅ **Environment variable management** with proper defaults
+- ✅ **Security best practices** with cleanup and validation
+- ✅ **Performance optimization** for different runner types
+
+### Before vs After
+
+| Aspect | Before (Embedded) | After (Modular) |
+|--------|------------------|------------------|
+| Workflow lines | 600+ | 150 |
+| Maintainability | Difficult | Easy |
+| Testability | Impossible | Full |
+| Debugging | Complex | Simple |
+| Reusability | None | High |
+| Security | Mixed | Dedicated cleanup |
+
+---
+
+**🎯 The GitHub Actions workflow is now professional, maintainable, and follows industry best practices for CI/CD pipelines.**
 
 ## Expected Output
 
