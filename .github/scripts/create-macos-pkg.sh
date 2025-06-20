@@ -359,6 +359,7 @@ create_signed_pkg() {
     # Use timeout command to prevent hanging
     if command -v timeout >/dev/null 2>&1; then
         # GNU timeout available
+        set -x
         timeout 1800 pkgbuild \
             --root "$temp_pkg_dir/pkg_root" \
             --install-location "/" \
@@ -366,10 +367,11 @@ create_signed_pkg() {
             --version "$VERSION" \
             --timestamp \
             --sign "$INSTALLER_SIGNING_IDENTITY" \
-            --verbose \
             "$pkg_name"
+        set +x
     else
         # Fallback: use background process with timeout
+        set -x
         pkgbuild \
             --root "$temp_pkg_dir/pkg_root" \
             --install-location "/" \
@@ -377,9 +379,8 @@ create_signed_pkg() {
             --version "$VERSION" \
             --timestamp \
             --sign "$INSTALLER_SIGNING_IDENTITY" \
-            --verbose \
             "$pkg_name" &
-
+        set +x
         local pkgbuild_pid=$!
         local timeout_seconds=1800  # 30 minutes
         local elapsed=0
