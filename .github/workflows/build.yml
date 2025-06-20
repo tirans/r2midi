@@ -204,15 +204,15 @@ jobs:
         run: |
           mkdir -p build_artifacts
           echo "${{ matrix.emoji }} Packaging ${{ matrix.platform }} builds..."
-          
+
           # Debug: Show what directories exist
           echo "🔍 Checking build directories..."
           find build/ -type d -name "*windows*" -o -name "*linux*" 2>/dev/null || echo "No platform-specific build dirs found"
-          
+
           if [ "${{ matrix.platform }}" = "linux" ]; then
             # Copy .deb packages
             find dist/ -name "*.deb" -exec cp {} build_artifacts/ \; 2>/dev/null || true
-            
+
             # Create tar.gz files as fallback
             if [ -d "build/server/linux/system" ]; then
               echo "📦 Creating Server tar.gz..."
@@ -225,12 +225,12 @@ jobs:
           else
             # Windows - create archives with improved error handling
             echo "🔍 Looking for Windows app directories..."
-            
+
             # Package Server
             if [ -d "build/server/windows/app" ]; then
               echo "📦 Packaging R2MIDI Server..."
               cd build/server/windows/app
-              
+
               # Try PowerShell first (Windows native)
               if command -v powershell >/dev/null 2>&1; then
                 echo "Using PowerShell Compress-Archive..."
@@ -243,18 +243,18 @@ jobs:
                 echo "Using tar as fallback..."
                 tar -czf "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Server-windows-v${APP_VERSION}.tar.gz" *
               fi
-              
+
               cd "$GITHUB_WORKSPACE"
               echo "✅ Server packaging complete"
             else
               echo "⚠️ Server app directory not found"
             fi
-            
+
             # Package Client
             if [ -d "build/r2midi-client/windows/app" ]; then
               echo "📦 Packaging R2MIDI Client..."
               cd build/r2midi-client/windows/app
-              
+
               # Try PowerShell first (Windows native)
               if command -v powershell >/dev/null 2>&1; then
                 echo "Using PowerShell Compress-Archive..."
@@ -267,7 +267,7 @@ jobs:
                 echo "Using tar as fallback..."
                 tar -czf "$GITHUB_WORKSPACE/build_artifacts/R2MIDI-Client-windows-v${APP_VERSION}.tar.gz" *
               fi
-              
+
               cd "$GITHUB_WORKSPACE"
               echo "✅ Client packaging complete"
             else
@@ -277,7 +277,7 @@ jobs:
 
           echo "${{ matrix.emoji }} Build artifacts:"
           ls -la build_artifacts/ || echo "No artifacts directory created"
-          
+
           # Debug: Show total directory structure if small
           echo "🔍 Final directory structure:"
           find . -name "build_artifacts" -exec ls -la {} \; 2>/dev/null || true
@@ -302,46 +302,114 @@ jobs:
         id: version
         shell: bash
         run: |
-          # Extract version from pyproject.toml with multiple fallback methods
+          # Robust version extraction script with multiple fallback methods
+          # This script handles edge cases and strict bash mode properly
+
+          echo "🔍 Starting robust version extraction..."
+
           VERSION=""
-          
+
           # Method 1: Try tomllib (Python 3.11+)
-          if [ -z "$VERSION" ]; then
-            VERSION=$(python3 -c "
-            try:
-                import tomllib
-                with open('pyproject.toml', 'rb') as f:
-                    config = tomllib.load(f)
-                print(config['project']['version'])
-            except:
-                pass
-            " 2>/dev/null)
+          echo "📋 Method 1: Trying tomllib..."
+          if [ -z "${VERSION:-}" ]; then
+              if VERSION_TEMP=$(python3 -c "
+          try:
+              import tomllib
+              with open('pyproject.toml', 'rb') as f:
+                  config = tomllib.load(f)
+              print(config['project']['version'])
+          except Exception as e:
+              import sys
+              print('', file=sys.stderr)  # Silent failure
+              exit(1)
+          " 2>/dev/null); then
+                  VERSION="${VERSION_TEMP}"
+                  echo "✅ Method 1 succeeded: ${VERSION}"
+              else
+                  echo "⚠️ Method 1 failed (tomllib not available or error)"
+              fi
           fi
-          
+
           # Method 2: Try regex parsing
-          if [ -z "$VERSION" ]; then
-            VERSION=$(python3 -c "
-            import re
-            with open('pyproject.toml', 'r') as f:
-                content = f.read()
-                match = re.search(r'version = \"([^\"]+)\"', content)
-                if match:
-                    print(match.group(1))
-            " 2>/dev/null)
+          echo "📋 Method 2: Trying regex parsing..."
+          if [ -z "${VERSION:-}" ]; then
+              if VERSION_TEMP=$(python3 -c "
+          import re
+          try:
+              with open('pyproject.toml', 'r') as f:
+                  content = f.read()
+                  match = re.search(r'version = \"([^\"]+)\"', content)
+                  if match:
+                      print(match.group(1))
+                  else:
+                      exit(1)
+          except Exception as e:
+              exit(1)
+          " 2>/dev/null); then
+                  VERSION="${VERSION_TEMP}"
+                  echo "✅ Method 2 succeeded: ${VERSION}"
+              else
+                  echo "⚠️ Method 2 failed (regex parsing error)"
+              fi
           fi
-          
+
           # Method 3: Simple grep fallback
-          if [ -z "$VERSION" ]; then
-            VERSION=$(grep -E '^version = ".*"' pyproject.toml | sed 's/version = "\(.*\)"/\1/' 2>/dev/null)
+          echo "📋 Method 3: Trying grep fallback..."
+          if [ -z "${VERSION:-}" ]; then
+              if VERSION_TEMP=$(grep -E '^version = ".*"' pyproject.toml 2>/dev/null | head -1 | sed 's/version = "\(.*\)"/\1/' 2>/dev/null); then
+                  if [ -n "${VERSION_TEMP:-}" ]; then
+                      VERSION="${VERSION_TEMP}"
+                      echo "✅ Method 3 succeeded: ${VERSION}"
+                  else
+                      echo "⚠️ Method 3 failed (empty result)"
+                  fi
+              else
+                  echo "⚠️ Method 3 failed (grep error)"
+              fi
           fi
-          
-          # Method 4: Default fallback
-          if [ -z "$VERSION" ]; then
-            VERSION="0.1.0"
+
+          # Method 4: Try alternative regex with awk
+          echo "📋 Method 4: Trying awk fallback..."
+          if [ -z "${VERSION:-}" ]; then
+              if VERSION_TEMP=$(awk '/^version = ".*"/ {gsub(/version = "|"/, ""); print $1; exit}' pyproject.toml 2>/dev/null); then
+                  if [ -n "${VERSION_TEMP:-}" ]; then
+                      VERSION="${VERSION_TEMP}"
+                      echo "✅ Method 4 succeeded: ${VERSION}"
+                  else
+                      echo "⚠️ Method 4 failed (empty result)"
+                  fi
+              else
+                  echo "⚠️ Method 4 failed (awk error)"
+              fi
           fi
-          
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Extracted version: $VERSION"
+
+          # Method 5: Default fallback
+          echo "📋 Method 5: Default fallback..."
+          if [ -z "${VERSION:-}" ]; then
+              VERSION="0.1.0"
+              echo "⚠️ Using default version: ${VERSION}"
+          fi
+
+          # Final validation
+          if [ -z "${VERSION:-}" ]; then
+              echo "❌ Error: Could not extract version from any method"
+              exit 1
+          fi
+
+          # Clean up the version string
+          VERSION=$(echo "${VERSION}" | tr -d '\n\r' | xargs)
+
+          # Validate version format (basic semver check)
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9]+)*$ ]]; then
+              echo "⚠️ Warning: Version '${VERSION}' doesn't follow semantic versioning format"
+          fi
+
+          # Set GitHub Actions outputs
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "📝 Set GitHub output: version=${VERSION}"
+
+          echo "✅ Version extraction completed successfully!"
+          echo "📦 Extracted version: ${VERSION}"
 
   build-macos-pkg-installers:
     name: 🍎 Build macOS PKG Installers (Native Tools - No Briefcase)
@@ -382,11 +450,11 @@ jobs:
         run: |
           echo "📦 Organizing artifacts..."
           mkdir -p release_artifacts
-          
+
           # Copy all platform builds
           find all_builds/ -type f -name "*.deb" -o -name "*.tar.gz" -o -name "*.zip" -o -name "*.pkg" -o -name "*.dmg" | \
             xargs -I {} cp {} release_artifacts/ 2>/dev/null || true
-          
+
           echo "📦 Release artifacts:"
           ls -la release_artifacts/
 
@@ -440,7 +508,7 @@ jobs:
             | 🪟 Windows | ❌ Unsigned | ⚠️ Testing only |
 
             ### 🔧 macOS Build Method 
-           
+
             **Current (Working):** Native macOS tools
             - ✅ **py2app** for building applications
             - ✅ **codesign** for code signing  
