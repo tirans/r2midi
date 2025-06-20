@@ -174,7 +174,7 @@ sign_app_bundle() {
         echo "✅ Library signing completed"
     fi
 
-    # Sign frameworks in parallel batches
+    # Sign frameworks in parallel batches with special handling for Qt frameworks
     if [ ${#frameworks_to_sign[@]} -gt 0 ]; then
         echo "🔗 Signing ${#frameworks_to_sign[@]} frameworks in optimized batches..."
         local batch_size=2  # Smaller batch size for frameworks as they're larger
@@ -183,8 +183,34 @@ sign_app_bundle() {
         for framework in "${frameworks_to_sign[@]}"; do
             if [ -d "$framework" ]; then
                 (
+                    # Special handling for Qt frameworks (PyQt6/Qt6)
+                    if [[ "$(basename "$framework")" == Qt* ]] || [[ "$framework" == *PyQt6/Qt6* ]]; then
+                        echo "🎯 Special Qt framework signing: $(basename "$framework")"
+
+                        # Sign internal executables in Qt frameworks first (inside-out approach)
+                        # Qt frameworks have structure: Framework.framework/Versions/A/Framework
+                        local framework_name=$(basename "$framework" .framework)
+                        local framework_executable="$framework/Versions/A/$framework_name"
+
+                        if [ -f "$framework_executable" ]; then
+                            echo "  🔗 Signing Qt framework executable: $framework_name"
+                            codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp "$framework_executable" 2>/dev/null || \
+                            echo "  ⚠️ Warning: Failed to sign Qt framework executable $framework_name"
+                        fi
+
+                        # Sign any other executables or dylibs inside the framework
+                        find "$framework" -type f \( -name "*.dylib" -o -perm +111 \) -not -path "*/Headers/*" -not -path "*/Resources/*" | while read inner_file; do
+                            if [ -f "$inner_file" ] && file "$inner_file" | grep -q "Mach-O"; then
+                                echo "  🔗 Signing Qt framework component: $(basename "$inner_file")"
+                                codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp "$inner_file" 2>/dev/null || \
+                                echo "  ⚠️ Warning: Failed to sign Qt framework component $(basename "$inner_file")"
+                            fi
+                        done
+                    fi
+
+                    # Sign the framework bundle itself (this works for both Qt and regular frameworks)
                     codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp "$framework" 2>/dev/null || \
-                    echo "⚠️ Warning: Failed to sign $(basename "$framework")"
+                    echo "⚠️ Warning: Failed to sign framework $(basename "$framework")"
                 ) &
 
                 batch_count=$((batch_count + 1))
