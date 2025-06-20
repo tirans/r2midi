@@ -388,6 +388,34 @@ notarize_file() {
 # Main workflow - Focus on PKG creation
 echo "🔍 Looking for built applications..."
 
+# Debug: Show what directories actually exist
+echo "🔍 Debugging directory structure:"
+echo "Current directory: $(pwd)"
+echo "Contents of current directory:"
+ls -la
+echo ""
+echo "Looking for dist/ directory:"
+if [ -d "dist" ]; then
+    echo "dist/ directory exists, contents:"
+    find dist/ -type d -name "*.app" 2>/dev/null || echo "No .app directories found in dist/"
+    echo "All dist/ contents:"
+    ls -la dist/
+else
+    echo "dist/ directory does not exist"
+fi
+echo ""
+echo "Looking for build/ directory:"
+if [ -d "build" ]; then
+    echo "build/ directory exists, searching for .app bundles:"
+    find build/ -name "*.app" -type d 2>/dev/null || echo "No .app bundles found in build/"
+else
+    echo "build/ directory does not exist"
+fi
+echo ""
+echo "Searching entire current directory for .app bundles:"
+find . -name "*.app" -type d 2>/dev/null || echo "No .app bundles found anywhere"
+echo ""
+
 # Ensure artifacts directory exists
 mkdir -p artifacts
 
@@ -396,75 +424,79 @@ declare -a successful_pkgs=()
 declare -a successful_dmgs=()
 declare -a failed_items=()
 
-# Process each application type
-for app_type in "server" "r2midi-client"; do
-    app_dir="dist/$app_type"
-    
-    if [ -d "$app_dir" ]; then
-        echo "📁 Processing app type: $app_type"
+# Find all .app bundles wherever they are
+echo "🔍 Searching for .app bundles in any location..."
+app_bundles=()
+while IFS= read -r -d '' app; do
+    app_bundles+=("$app")
+done < <(find . -name "*.app" -type d -print0 2>/dev/null)
+
+if [ ${#app_bundles[@]} -eq 0 ]; then
+    echo "❌ Error: No .app bundles found anywhere"
+    echo "Briefcase may have failed to build the applications"
+    failed_items+=("No .app bundles found")
+else
+    echo "✅ Found ${#app_bundles[@]} .app bundle(s):"
+    for app in "${app_bundles[@]}"; do
+        echo "  - $app"
+    done
+    echo ""
+fi
+
+# Process each found .app bundle
+for app_bundle in "${app_bundles[@]}"; do
+    if [ -d "$app_bundle" ]; then
+        app_name=$(basename "$app_bundle" .app)
+        echo "📱 Processing app bundle: $app_name ($app_bundle)"
         
-        # Find the .app bundle
-        app_bundle=$(find "$app_dir" -name "*.app" -type d | head -1)
-        
-        if [ -n "$app_bundle" ] && [ -d "$app_bundle" ]; then
-            echo "📱 Found app bundle: $app_bundle"
+        # Step 1: Sign the app bundle
+        if sign_app_bundle "$app_bundle"; then
+            echo "✅ Successfully signed: $app_bundle"
             
-            # Step 1: Sign the app bundle
-            if sign_app_bundle "$app_bundle"; then
-                echo "✅ Successfully signed: $app_bundle"
+            # Step 2: Create PKG installer (PRIMARY FOCUS)
+            echo "🎯 Creating PKG installer (primary distribution format)..."
+            if create_signed_pkg "$app_bundle"; then
+                pkg_file="$app_name-$VERSION.pkg"
                 
-                # Step 2: Create PKG installer (PRIMARY FOCUS)
-                echo "🎯 Creating PKG installer (primary distribution format)..."
-                if create_signed_pkg "$app_bundle"; then
-                    pkg_file="$(basename "$app_bundle" .app)-$VERSION.pkg"
-                    
-                    # Step 3: Notarize the PKG
-                    if notarize_file "$pkg_file"; then
-                        # Move to artifacts
-                        mv "$pkg_file" artifacts/
-                        successful_pkgs+=("$pkg_file")
-                        echo "✅ PKG ready: artifacts/$pkg_file"
-                    else
-                        failed_items+=("PKG notarization for $app_type")
-                        echo "❌ Failed to notarize PKG for $app_type"
-                    fi
+                # Step 3: Notarize the PKG
+                if notarize_file "$pkg_file"; then
+                    # Move to artifacts
+                    mv "$pkg_file" artifacts/
+                    successful_pkgs+=("$pkg_file")
+                    echo "✅ PKG ready: artifacts/$pkg_file"
                 else
-                    failed_items+=("PKG creation for $app_type")
-                    echo "❌ Failed to create PKG for $app_type"
+                    failed_items+=("PKG notarization for $app_name")
+                    echo "❌ Failed to notarize PKG for $app_name"
                 fi
+            else
+                failed_items+=("PKG creation for $app_name")
+                echo "❌ Failed to create PKG for $app_name"
+            fi
+            
+            # Step 4: Create optional DMG (secondary)
+            echo "💽 Creating optional DMG (secondary distribution format)..."
+            if create_optional_dmg "$app_bundle"; then
+                dmg_file="$app_name-$VERSION.dmg"
                 
-                # Step 4: Create optional DMG (secondary)
-                echo "💽 Creating optional DMG (secondary distribution format)..."
-                if create_optional_dmg "$app_bundle"; then
-                    dmg_file="$(basename "$app_bundle" .app)-$VERSION.dmg"
-                    
-                    # Notarize the DMG
-                    if notarize_file "$dmg_file"; then
-                        # Move to artifacts
-                        mv "$dmg_file" artifacts/
-                        successful_dmgs+=("$dmg_file")
-                        echo "✅ DMG ready: artifacts/$dmg_file"
-                    else
-                        echo "⚠️ Warning: Failed to notarize DMG for $app_type (not critical)"
-                        # Don't add to failed_items since DMG is optional
-                    fi
+                # Notarize the DMG
+                if notarize_file "$dmg_file"; then
+                    # Move to artifacts
+                    mv "$dmg_file" artifacts/
+                    successful_dmgs+=("$dmg_file")
+                    echo "✅ DMG ready: artifacts/$dmg_file"
                 else
-                    echo "⚠️ Warning: Failed to create DMG for $app_type (not critical)"
+                    echo "⚠️ Warning: Failed to notarize DMG for $app_name (not critical)"
                     # Don't add to failed_items since DMG is optional
                 fi
-                
             else
-                failed_items+=("Signing for $app_type")
-                echo "❌ Failed to sign: $app_bundle"
+                echo "⚠️ Warning: Failed to create DMG for $app_name (not critical)"
+                # Don't add to failed_items since DMG is optional
             fi
             
         else
-            echo "⚠️ Warning: No .app bundle found for $app_type in $app_dir"
-            failed_items+=("No app bundle for $app_type")
+            failed_items+=("Signing for $app_name")
+            echo "❌ Failed to sign: $app_bundle"
         fi
-    else
-        echo "⚠️ Warning: No dist directory found for $app_type"
-        failed_items+=("No dist directory for $app_type")
     fi
 done
 
