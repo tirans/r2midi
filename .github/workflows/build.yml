@@ -9,7 +9,7 @@ on:
 # Prevent concurrent runs on the same branch
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false  # Don't cancel in-progress runs
+  cancel-in-progress: true  # Cancel in-progress runs to prevent queuing
 
 permissions:
   contents: write
@@ -23,19 +23,19 @@ jobs:
     outputs:
       should_skip: ${{ steps.check.outputs.should_skip }}
       should_increment: ${{ steps.check.outputs.should_increment }}
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      
+
       - name: Check skip conditions
         id: check
         run: |
           COMMIT_MSG=$(git log -1 --pretty=%B)
           echo "Latest commit message: $COMMIT_MSG"
-          
+
           # Check for skip CI
           if echo "$COMMIT_MSG" | grep -qE '\[skip ci\]|\[ci skip\]|\[skip actions\]|\[actions skip\]'; then
             echo "should_skip=true" >> $GITHUB_OUTPUT
@@ -68,6 +68,7 @@ jobs:
   increment-version:
     name: Increment Version
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [check-skip, ci]
     if: |
       always() && 
@@ -100,11 +101,12 @@ jobs:
     name: Build Python Package
     needs: [check-skip, ci, increment-version]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: |
       always() && 
       needs.check-skip.outputs.should_skip != 'true' && 
       needs.ci.result == 'success' &&
-      (needs.increment-version.result == 'success' || needs.increment-version.result == 'skipped')
+      (needs.increment-version.result == 'success' || needs.increment-version.result == 'skipped' || needs.check-skip.outputs.should_increment != 'true')
 
     steps:
       - name: Checkout code
@@ -143,11 +145,12 @@ jobs:
   build-cross-platform:
     name: Build ${{ matrix.platform_name }}
     needs: [check-skip, ci, increment-version]
+    timeout-minutes: 45
     if: |
       always() && 
       needs.check-skip.outputs.should_skip != 'true' && 
       needs.ci.result == 'success' &&
-      (needs.increment-version.result == 'success' || needs.increment-version.result == 'skipped')
+      (needs.increment-version.result == 'success' || needs.increment-version.result == 'skipped' || needs.check-skip.outputs.should_increment != 'true')
     strategy:
       fail-fast: false
       matrix:
@@ -241,7 +244,7 @@ jobs:
       always() && 
       needs.check-skip.outputs.should_skip != 'true' && 
       needs.ci.result == 'success' &&
-      (needs.increment-version.result == 'success' || needs.increment-version.result == 'skipped')
+      (needs.increment-version.result == 'success' || needs.increment-version.result == 'skipped' || needs.check-skip.outputs.should_increment != 'true')
     with:
       # Use the incremented version if available, otherwise extract from current code
       version: ${{ needs.increment-version.outputs.version || '' }}
@@ -258,6 +261,7 @@ jobs:
     name: Create Staging Release
     needs: [increment-version, build-cross-platform, build-macos, build-python-package]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: |
       github.event_name == 'push' && 
       github.ref == 'refs/heads/master' &&
@@ -281,10 +285,10 @@ jobs:
         run: |
           echo "📦 Organizing artifacts..."
           mkdir -p release_artifacts
-          
+
           # Copy all platform builds
           find all_builds/ -type f \( -name "*.deb" -o -name "*.tar.gz" -o -name "*.zip" -o -name "*.pkg" -o -name "*.dmg" \) -exec cp {} release_artifacts/ \; 2>/dev/null || true
-          
+
           echo "📦 Release artifacts:"
           ls -la release_artifacts/
 
