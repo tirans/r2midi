@@ -1,5 +1,4 @@
 name: Build macOS
-
 on:
   workflow_call:
     inputs:
@@ -51,7 +50,7 @@ on:
 jobs:
   build-macos:
     name: Build macOS Apps (Signed & Notarized)
-    runs-on: macos-14
+    runs-on: ${{ vars.MACOS_RUNNER || 'macos-14' }}
     timeout-minutes: 60
     outputs:
       artifact-name: ${{ steps.upload.outputs.artifact-name }}
@@ -124,13 +123,16 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          # Load Apple credentials (GitHub secrets or local config)
+          source ./.github/scripts/load-apple-credentials.sh
+
           # Try PKG creation first
           if ./.github/scripts/create-macos-pkg.sh \
             "${{ steps.version.outputs.version }}" \
             "${{ inputs.build-type }}" \
-            "${{ secrets.APPLE_ID }}" \
-            "${{ secrets.APPLE_ID_PASSWORD }}" \
-            "${{ secrets.APPLE_TEAM_ID }}"; then
+            "$APPLE_ID_FINAL" \
+            "$APPLE_ID_PASSWORD_FINAL" \
+            "$APPLE_TEAM_ID_FINAL"; then
             echo "pkg_success=true" >> $GITHUB_OUTPUT
             echo "✅ PKG creation successful"
           else
@@ -147,13 +149,16 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          # Load Apple credentials (GitHub secrets or local config)
+          source ./.github/scripts/load-apple-credentials.sh
+
           echo "💿 PKG creation failed, creating DMG files as fallback..."
           ./.github/scripts/create-macos-dmg-fallback.sh \
             "${{ steps.version.outputs.version }}" \
             "${{ inputs.build-type }}" \
-            "${{ secrets.APPLE_ID }}" \
-            "${{ secrets.APPLE_ID_PASSWORD }}" \
-            "${{ secrets.APPLE_TEAM_ID }}"
+            "$APPLE_ID_FINAL" \
+            "$APPLE_ID_PASSWORD_FINAL" \
+            "$APPLE_TEAM_ID_FINAL"
 
       - name: Organize final artifacts
         shell: bash

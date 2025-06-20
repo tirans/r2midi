@@ -57,7 +57,7 @@ echo "✅ Keychain added to search list"
 test_p12_certificate() {
     local cert_file="$1"
     local password="$2"
-    
+
     # Try with -legacy flag first (OpenSSL 3.x)
     if openssl pkcs12 -legacy -in "$cert_file" -noout -passin pass:"$password" 2>/dev/null; then
         echo "✅ Certificate valid (using legacy provider)"
@@ -76,19 +76,94 @@ test_p12_certificate() {
     fi
 }
 
-# Check for certificate format - support both individual certs and combined P12
+# Check for certificate format - support GitHub secrets, combined P12, and local files
 echo "Step 5: Checking certificate format..."
 
-# Method 1: Individual application and installer certificates (preferred for automation)
-if [ -n "${APPLE_DEVELOPER_ID_APPLICATION_CERT:-}" ] && [ -n "${APPLE_DEVELOPER_ID_INSTALLER_CERT:-}" ]; then
+# Method 1: Local certificate files (for self-hosted runners)
+if [ -f "apple_credentials/certificates/app_cert.p12" ] && [ -f "apple_credentials/certificates/installer_cert.p12" ] && [ -f "apple_credentials/config/app_config.json" ]; then
+    echo "📜 Using local certificate files (self-hosted runner mode)"
+
+    # Load credentials from app_config.json
+    if command -v jq >/dev/null 2>&1; then
+        LOCAL_CERT_PASSWORD=$(jq -r '.apple_developer.p12_password' apple_credentials/config/app_config.json)
+    else
+        # Fallback: extract password using grep and sed
+        LOCAL_CERT_PASSWORD=$(grep -o '"p12_password"[[:space:]]*:[[:space:]]*"[^"]*"' apple_credentials/config/app_config.json | sed 's/.*"p12_password"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    fi
+
+    if [ -z "$LOCAL_CERT_PASSWORD" ] || [ "$LOCAL_CERT_PASSWORD" = "null" ]; then
+        echo "❌ Error: Could not extract p12_password from app_config.json"
+        exit 1
+    fi
+
+    echo "✅ Loaded certificate password from local config"
+
+    # Copy local certificates to working directory
+    echo "Step 6c: Using local certificate files..."
+    cp "apple_credentials/certificates/app_cert.p12" "app_cert.p12"
+    if [ $? -ne 0 ] || [ ! -s app_cert.p12 ]; then
+        echo "❌ Failed to copy local application certificate"
+        exit 1
+    fi
+    echo "✅ Local application certificate ready"
+
+    cp "apple_credentials/certificates/installer_cert.p12" "installer_cert.p12"
+    if [ $? -ne 0 ] || [ ! -s installer_cert.p12 ]; then
+        echo "❌ Failed to copy local installer certificate"
+        rm -f app_cert.p12
+        exit 1
+    fi
+    echo "✅ Local installer certificate ready"
+
+    # Validate P12 files with OpenSSL 3.x compatibility
+    echo "Validating local application certificate..."
+    if ! test_p12_certificate "app_cert.p12" "$LOCAL_CERT_PASSWORD"; then
+        echo "❌ Error: Invalid local application certificate or password"
+        echo "🔍 Checking OpenSSL version: $(openssl version)"
+        rm -f app_cert.p12 installer_cert.p12
+        exit 1
+    fi
+
+    echo "Validating local installer certificate..."
+    if ! test_p12_certificate "installer_cert.p12" "$LOCAL_CERT_PASSWORD"; then
+        echo "❌ Error: Invalid local installer certificate or password"
+        echo "🔍 Checking OpenSSL version: $(openssl version)"
+        rm -f app_cert.p12 installer_cert.p12
+        exit 1
+    fi
+
+    # Import certificates
+    echo "Step 7c: Importing local application certificate..."
+    security import app_cert.p12 -k "$TEMP_KEYCHAIN" -P "$LOCAL_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild
+    if [ $? -ne 0 ]; then
+        echo "❌ Failed to import local application certificate"
+        rm -f app_cert.p12 installer_cert.p12
+        exit 1
+    fi
+    echo "✅ Local application certificate imported"
+
+    echo "Step 8c: Importing local installer certificate..."
+    security import installer_cert.p12 -k "$TEMP_KEYCHAIN" -P "$LOCAL_CERT_PASSWORD" -T /usr/bin/productsign -T /usr/bin/productbuild
+    if [ $? -ne 0 ]; then
+        echo "❌ Failed to import local installer certificate"
+        rm -f app_cert.p12 installer_cert.p12
+        exit 1
+    fi
+    echo "✅ Local installer certificate imported"
+
+    # Clean up certificate files
+    rm -f app_cert.p12 installer_cert.p12
+
+# Method 2: Individual application and installer certificates (GitHub secrets)
+elif [ -n "${APPLE_DEVELOPER_ID_APPLICATION_CERT:-}" ] && [ -n "${APPLE_DEVELOPER_ID_INSTALLER_CERT:-}" ]; then
     echo "📜 Using separate application and installer certificates"
-    
+
     # Validate environment variables
     if [ -z "${APPLE_CERT_PASSWORD:-}" ]; then
         echo "❌ Error: APPLE_CERT_PASSWORD is required for certificate import"
         exit 1
     fi
-    
+
     # Decode and save certificates
     echo "Step 6a: Decoding separate certificates..."
     echo "$APPLE_DEVELOPER_ID_APPLICATION_CERT" | base64 --decode > app_cert.p12
@@ -105,7 +180,7 @@ if [ -n "${APPLE_DEVELOPER_ID_APPLICATION_CERT:-}" ] && [ -n "${APPLE_DEVELOPER_
         exit 1
     fi
     echo "✅ Installer certificate decoded"
-    
+
     # Validate P12 files with OpenSSL 3.x compatibility
     echo "Validating application certificate..."
     if ! test_p12_certificate "app_cert.p12" "$APPLE_CERT_PASSWORD"; then
@@ -148,13 +223,13 @@ if [ -n "${APPLE_DEVELOPER_ID_APPLICATION_CERT:-}" ] && [ -n "${APPLE_DEVELOPER_
 # Method 2: Single P12 certificate (GitHub workflow format)
 elif [ -n "${APPLE_CERTIFICATE_P12:-}" ]; then
     echo "📜 Using combined P12 certificate from GitHub workflow"
-    
+
     # Validate environment variables
     if [ -z "${APPLE_CERTIFICATE_PASSWORD:-}" ]; then
         echo "❌ Error: APPLE_CERTIFICATE_PASSWORD is required for certificate import"
         exit 1
     fi
-    
+
     # Decode and save certificate
     echo "Step 6b: Decoding combined certificate..."
     echo "$APPLE_CERTIFICATE_P12" | base64 --decode > combined_cert.p12
@@ -163,7 +238,7 @@ elif [ -n "${APPLE_CERTIFICATE_P12:-}" ]; then
         exit 1
     fi
     echo "✅ Combined certificate decoded"
-    
+
     # Validate P12 file with OpenSSL 3.x compatibility
     echo "Validating combined certificate..."
     if ! test_p12_certificate "combined_cert.p12" "$APPLE_CERTIFICATE_PASSWORD"; then
