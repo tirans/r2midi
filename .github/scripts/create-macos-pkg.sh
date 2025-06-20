@@ -85,15 +85,22 @@ echo "📋 Installer signing identity: $INSTALLER_SIGNING_IDENTITY"
 # Find entitlements file
 ENTITLEMENTS_FILE=""
 if [ -f "entitlements.plist" ]; then
-    ENTITLEMENTS_FILE="entitlements.plist"
+    # Validate the entitlements file first
+    if plutil -lint "entitlements.plist" >/dev/null 2>&1; then
+        ENTITLEMENTS_FILE="entitlements.plist"
+        echo "📋 Using entitlements file: $ENTITLEMENTS_FILE"
+    else
+        echo "⚠️ Warning: entitlements.plist exists but is invalid, skipping entitlements"
+    fi
 elif [ -f "build/r2midi-client/macos/app/Entitlements.plist" ]; then
-    ENTITLEMENTS_FILE="build/r2midi-client/macos/app/Entitlements.plist"
+    if plutil -lint "build/r2midi-client/macos/app/Entitlements.plist" >/dev/null 2>&1; then
+        ENTITLEMENTS_FILE="build/r2midi-client/macos/app/Entitlements.plist"
+        echo "📋 Using entitlements file: $ENTITLEMENTS_FILE"
+    else
+        echo "⚠️ Warning: Briefcase entitlements file exists but is invalid, skipping entitlements"
+    fi
 else
     echo "⚠️ Warning: No entitlements file found, signing without entitlements"
-fi
-
-if [ -n "$ENTITLEMENTS_FILE" ]; then
-    echo "📋 Using entitlements file: $ENTITLEMENTS_FILE"
 fi
 
 # Function to get bundle ID from Info.plist
@@ -170,13 +177,32 @@ sign_app_bundle() {
     
     # Step 5: Sign the main app bundle (outermost layer)
     echo "🎯 Signing main app bundle: $app_name"
+    
+    # Try signing with entitlements first, fall back to without if it fails
+    local signing_success=false
+    
     if [ -n "$ENTITLEMENTS_FILE" ]; then
-        codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp --entitlements "$ENTITLEMENTS_FILE" "$app_path"
+        echo "Attempting to sign with entitlements: $ENTITLEMENTS_FILE"
+        if codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp --entitlements "$ENTITLEMENTS_FILE" "$app_path" 2>/dev/null; then
+            signing_success=true
+            echo "✅ Signed successfully with entitlements"
+        else
+            echo "⚠️ Warning: Signing with entitlements failed, trying without entitlements..."
+            # Try without entitlements as fallback
+            if codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp "$app_path"; then
+                signing_success=true
+                echo "✅ Signed successfully without entitlements (fallback)"
+            fi
+        fi
     else
-        codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp "$app_path"
+        echo "Signing without entitlements"
+        if codesign --force --sign "$APPLICATION_SIGNING_IDENTITY" --options runtime --timestamp "$app_path"; then
+            signing_success=true
+            echo "✅ Signed successfully without entitlements"
+        fi
     fi
     
-    if [ $? -ne 0 ]; then
+    if [ "$signing_success" != "true" ]; then
         echo "❌ Failed to sign app bundle: $app_name"
         return 1
     fi

@@ -170,42 +170,49 @@ mkdir -p artifacts
 declare -a successful_dmgs=()
 declare -a failed_items=()
 
-# Process each application type
-for app_type in "server" "r2midi-client"; do
-    app_dir="dist/$app_type"
-    
-    if [ -d "$app_dir" ]; then
-        echo "📁 Processing app type: $app_type"
+# Find all .app bundles wherever they are (same logic as PKG script)
+echo "🔍 Searching for .app bundles in any location..."
+app_bundles=()
+while IFS= read -r -d '' app; do
+    app_bundles+=("$app")
+done < <(find . -name "*.app" -type d -print0 2>/dev/null)
+
+if [ ${#app_bundles[@]} -eq 0 ]; then
+    echo "❌ Error: No .app bundles found anywhere"
+    echo "Briefcase may have failed to build the applications"
+    failed_items+=("No .app bundles found")
+else
+    echo "✅ Found ${#app_bundles[@]} .app bundle(s):"
+    for app in "${app_bundles[@]}"; do
+        echo "  - $app"
+    done
+    echo ""
+fi
+
+# Process each found .app bundle
+for app_bundle in "${app_bundles[@]}"; do
+    if [ -d "$app_bundle" ]; then
+        app_name=$(basename "$app_bundle" .app)
+        echo "📱 Processing app bundle: $app_name ($app_bundle)"
         
-        # Find the .app bundle
-        app_bundle=$(find "$app_dir" -name "*.app" -type d | head -1)
-        
-        if [ -n "$app_bundle" ] && [ -d "$app_bundle" ]; then
-            echo "📱 Found app bundle: $app_bundle"
-            
-            # Sign and create DMG
-            if sign_app_bundle "$app_bundle"; then
-                if create_dmg "$app_bundle"; then
-                    dmg_file="$(basename "$app_bundle" .app)-$VERSION.dmg"
-                    
-                    if notarize_file "$dmg_file"; then
-                        mv "$dmg_file" artifacts/
-                        successful_dmgs+=("$dmg_file")
-                        echo "✅ DMG ready: artifacts/$dmg_file"
-                    else
-                        failed_items+=("DMG notarization for $app_type")
-                    fi
+        # Sign and create DMG
+        if sign_app_bundle "$app_bundle"; then
+            if create_dmg "$app_bundle"; then
+                dmg_file="$app_name-$VERSION.dmg"
+                
+                if notarize_file "$dmg_file"; then
+                    mv "$dmg_file" artifacts/
+                    successful_dmgs+=("$dmg_file")
+                    echo "✅ DMG ready: artifacts/$dmg_file"
                 else
-                    failed_items+=("DMG creation for $app_type")
+                    failed_items+=("DMG notarization for $app_name")
                 fi
             else
-                failed_items+=("Signing for $app_type")
+                failed_items+=("DMG creation for $app_name")
             fi
         else
-            failed_items+=("No app bundle for $app_type")
+            failed_items+=("Signing for $app_name")
         fi
-    else
-        failed_items+=("No dist directory for $app_type")
     fi
 done
 
@@ -224,7 +231,7 @@ Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 Successfully Created DMG Files:
 EOF
 
-if [ ${#successful_dmgs[@]} -gt 0 ]; then
+if [ ${#successful_dmgs[@]:-0} -gt 0 ]; then
     for dmg in "${successful_dmgs[@]}"; do
         if [ -f "artifacts/$dmg" ]; then
             size=$(du -h "artifacts/$dmg" | cut -f1)
@@ -235,7 +242,7 @@ else
     echo "  ❌ No DMG files created successfully" >> artifacts/DMG_FALLBACK_REPORT.txt
 fi
 
-if [ ${#failed_items[@]} -gt 0 ]; then
+if [ ${#failed_items[@]:-0} -gt 0 ]; then
     echo "" >> artifacts/DMG_FALLBACK_REPORT.txt
     echo "Failed Operations:" >> artifacts/DMG_FALLBACK_REPORT.txt
     for item in "${failed_items[@]}"; do
@@ -268,21 +275,25 @@ EOF
 echo ""
 echo "✅ macOS DMG fallback creation complete!"
 echo "📋 Summary:"
-echo "  - DMG Files: ${#successful_dmgs[@]}"
-echo "  - Failed operations: ${#failed_items[@]}"
+echo "  - DMG Files: ${#successful_dmgs[@]:-0}"
+echo "  - Failed operations: ${#failed_items[@]:-0}"
 echo ""
 echo "📁 Available DMG files:"
-for dmg in "${successful_dmgs[@]}"; do
-    if [ -f "artifacts/$dmg" ]; then
-        size=$(du -h "artifacts/$dmg" | cut -f1)
-        echo "  💽 $dmg ($size)"
-    fi
-done
+if [ ${#successful_dmgs[@]:-0} -gt 0 ]; then
+    for dmg in "${successful_dmgs[@]}"; do
+        if [ -f "artifacts/$dmg" ]; then
+            size=$(du -h "artifacts/$dmg" | cut -f1)
+            echo "  💽 $dmg ($size)"
+        fi
+    done
+else
+    echo "  No DMG files were created"
+fi
 echo ""
 echo "📋 Report: artifacts/DMG_FALLBACK_REPORT.txt"
 
 # Exit with error if any operations failed
-if [ ${#failed_items[@]} -gt 0 ]; then
+if [ ${#failed_items[@]:-0} -gt 0 ]; then
     echo "❌ Some operations failed."
     exit 1
 fi
