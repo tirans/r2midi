@@ -139,12 +139,15 @@ requires = [
 ]
 
 # macOS specific settings
-# The codesign_identity is set dynamically during the build process
-# The actual identity is provided by the GitHub Actions workflow
-# For notarization, we need to use "Developer ID Application" certificate
-codesign_identity = "Developer ID Application"
+# Using proper Developer ID Application certificate for code signing
+# Certificate and password are loaded from apple_credentials/config/app_config.json
+# This provides full signing capabilities with all entitlements
+codesign_identity = "Developer ID Application: Tiran Efrat (79449BGAM5)"
 entitlements_file = "entitlements.plist"
 packaging_format = "dmg,pkg"
+
+# Signing options for better compatibility
+sign_app = true
 
 [tool.briefcase.app.r2midi-client.macOS]
 requires = [
@@ -157,15 +160,18 @@ requires = [
 ]
 
 # macOS specific settings
-# The codesign_identity is set dynamically during the build process
-# The actual identity is provided by the GitHub Actions workflow
-# For notarization, we need to use "Developer ID Application" certificate
-codesign_identity = "Developer ID Application"
+# Using proper Developer ID Application certificate for code signing
+# Certificate and password are loaded from apple_credentials/config/app_config.json
+# This provides full signing capabilities with all entitlements
+codesign_identity = "Developer ID Application: Tiran Efrat (79449BGAM5)"
 entitlements_file = "entitlements.plist"
 packaging_format = "dmg,pkg"
 
+# Signing options for better compatibility
+sign_app = true
+
 # ========================================
-# Windows Configuration  
+# Windows Configuration
 # ========================================
 [tool.briefcase.app.server.windows]
 requires = [

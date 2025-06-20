@@ -61,11 +61,11 @@ jobs:
           # Use existing Python from your venv
           echo "🖥️ Using self-hosted runner Python..."
           python --version || python3 --version
-          
+
           # Verify we're in the right environment
           echo "Current Python: $(which python)"
           echo "Python version: $(python --version)"
-          
+
           # Set up environment variable for consistency
           echo "PYTHON_CMD=python" >> $GITHUB_ENV
 
@@ -95,11 +95,11 @@ jobs:
         shell: bash
         run: |
           echo "🖥️ Checking system dependencies on self-hosted runner..."
-          
+
           # Check if dependencies are already installed (common on self-hosted)
           if command -v brew >/dev/null 2>&1; then
             echo "✅ Homebrew available"
-            
+
             # Only install if not present (faster on self-hosted)
             if ! brew list python-tk >/dev/null 2>&1; then
               echo "📦 Installing python-tk..."
@@ -112,17 +112,17 @@ jobs:
             /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
             brew install python-tk
           fi
-          
+
           echo "✅ System dependencies ready"
 
       - name: ⚡ Install Python dependencies (Self-Hosted Optimized)
         shell: bash
         run: |
           echo "🖥️ Installing Python dependencies on M3 Max..."
-          
+
           # Use existing Python
           python -m pip install --upgrade pip
-          
+
           # Install briefcase if not present
           if ! python -c "import briefcase" 2>/dev/null; then
             echo "📦 Installing briefcase..."
@@ -130,11 +130,11 @@ jobs:
           else
             echo "✅ briefcase already available"
           fi
-          
+
           # Install project dependencies
           python -m pip install -r requirements.txt
           python -m pip install -r r2midi_client/requirements.txt
-          
+
           echo "✅ Python dependencies installed"
 
       - name: Setup Apple Developer certificates
@@ -146,14 +146,33 @@ jobs:
         run: |
           ./.github/scripts/setup-certificates.sh
 
+      - name: 🔐 Configure signing and entitlements for briefcase
+        shell: bash
+        run: |
+          echo "🔧 Configuring signing and entitlements for briefcase..."
+
+          # Make scripts executable
+          chmod +x scripts/select_entitlements.py
+          chmod +x scripts/configure_briefcase_signing.py
+
+          # Configure briefcase signing identity
+          echo "🔐 Setting up briefcase signing identity..."
+          python scripts/configure_briefcase_signing.py
+
+          # Select appropriate entitlements based on certificate availability
+          echo "🔍 Selecting appropriate entitlements..."
+          python scripts/select_entitlements.py
+
+          echo "✅ Briefcase signing and entitlements configuration completed"
+
       - name: ⚡ Build applications (M3 Max Parallel Power)
         shell: bash
         run: |
           echo "🚀 Building apps with M3 Max parallel processing..."
-          
+
           # Export Python path for briefcase
           export PYTHONPATH="${PWD}:${PYTHONPATH:-}"
-          
+
           # Build both apps in parallel (M3 Max can handle this easily)
           echo "📦 Starting parallel builds..."
           (
@@ -161,28 +180,28 @@ jobs:
             briefcase build macos app -a server
           ) &
           server_pid=$!
-          
+
           (
             echo "🖥️ Building client app..."  
             briefcase build macos app -a r2midi-client
           ) &
           client_pid=$!
-          
+
           # Wait for both with progress
           echo "⏳ Waiting for parallel builds on M3 Max..."
           wait $server_pid
           server_result=$?
           echo "✅ Server build completed (exit: $server_result)"
-          
+
           wait $client_pid  
           client_result=$?
           echo "✅ Client build completed (exit: $client_result)"
-          
+
           if [ $server_result -ne 0 ] || [ $client_result -ne 0 ]; then
             echo "❌ App build failed"
             exit 1
           fi
-          
+
           echo "🚀 Both apps built successfully with M3 Max parallel processing!"
 
       - name: ⚡ Create optimized PKG installers
@@ -212,10 +231,10 @@ jobs:
         shell: bash
         run: |
           echo "📦 Quick artifact organization..."
-          
+
           # Simple file counting and verification
           pkg_count=$(find artifacts/ -name "*.pkg" 2>/dev/null | wc -l)
-          
+
           if [ "$pkg_count" -gt 0 ]; then
             echo "✅ $pkg_count PKG installer(s) ready"
             find artifacts/ -name "*.pkg" | while read pkg; do
@@ -231,7 +250,7 @@ jobs:
         shell: bash
         run: |
           echo "🔍 Quick validation..."
-          
+
           # Fast signature check only
           find artifacts/ -name "*.pkg" | while read file; do
             echo "Checking $(basename "$file")..."
@@ -241,7 +260,7 @@ jobs:
               echo "  ⚠️ Signature check failed"
             fi
           done
-          
+
           echo "✅ Quick validation complete"
 
       - name: Upload artifacts
@@ -286,18 +305,18 @@ jobs:
         shell: bash
         run: |
           echo "🧹 Comprehensive self-hosted runner cleanup..."
-          
+
           # Remove temporary certificates and signing materials
           rm -f *.p12 2>/dev/null || true
           rm -f /tmp/signing_identities.sh 2>/dev/null || true
-          
+
           # Clean up temporary keychains
           if [ -n "${TEMP_KEYCHAIN:-}" ]; then
             security delete-keychain "$TEMP_KEYCHAIN" 2>/dev/null || true
           fi
-          
+
           # Clean up any leftover build artifacts in temp locations
           rm -rf /tmp/pkg_*/ 2>/dev/null || true
-          
+
           echo "✅ Self-hosted runner cleanup complete"
           echo "🖥️ Runner ready for next build"
