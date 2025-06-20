@@ -132,7 +132,7 @@ jobs:
             emoji: 🪟
           - os: ubuntu-latest
             platform: linux
-            platform_name: linux  
+            platform_name: linux
             emoji: 🐧
     runs-on: ${{ matrix.os }}
 
@@ -290,14 +290,68 @@ jobs:
           path: build_artifacts/
           retention-days: 30
 
+  extract-version:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Extract version
+        id: version
+        shell: bash
+        run: |
+          # Extract version from pyproject.toml with multiple fallback methods
+          VERSION=""
+          
+          # Method 1: Try tomllib (Python 3.11+)
+          if [ -z "$VERSION" ]; then
+            VERSION=$(python3 -c "
+            try:
+                import tomllib
+                with open('pyproject.toml', 'rb') as f:
+                    config = tomllib.load(f)
+                print(config['project']['version'])
+            except:
+                pass
+            " 2>/dev/null)
+          fi
+          
+          # Method 2: Try regex parsing
+          if [ -z "$VERSION" ]; then
+            VERSION=$(python3 -c "
+            import re
+            with open('pyproject.toml', 'r') as f:
+                content = f.read()
+                match = re.search(r'version = \"([^\"]+)\"', content)
+                if match:
+                    print(match.group(1))
+            " 2>/dev/null)
+          fi
+          
+          # Method 3: Simple grep fallback
+          if [ -z "$VERSION" ]; then
+            VERSION=$(grep -E '^version = ".*"' pyproject.toml | sed 's/version = "\(.*\)"/\1/' 2>/dev/null)
+          fi
+          
+          # Method 4: Default fallback
+          if [ -z "$VERSION" ]; then
+            VERSION="0.1.0"
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
+
   build-macos-pkg-installers:
-    name: Build macOS PKG Installers (Signed & Notarized)
-    needs: test
+    name: 🍎 Build macOS PKG Installers (Native Tools - No Briefcase)
+    needs: [test, extract-version]
     uses: ./.github/workflows/build-macos.yml
     if: github.event_name == 'push'
     with:
-      version: "0.1.166"
+      version: ${{ needs.extract-version.outputs.version }}
       build-type: "production"
+      runner-type: "self-hosted"  # Use your M3 Max runner
     secrets:
       APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
       APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
@@ -307,7 +361,7 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
   create-release:
-    needs: [build-cross-platform, build-macos-pkg-installers]
+    needs: [build-cross-platform, build-macos-pkg-installers, extract-version]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
 
@@ -315,12 +369,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Extract version information
-        id: get_version
-        shell: bash
+      - name: Set version from extract-version job
         run: |
-          ./.github/scripts/extract-version.sh
-          echo "VERSION=${APP_VERSION}" >> $GITHUB_ENV
+          echo "VERSION=${{ needs.extract-version.outputs.version }}" >> $GITHUB_ENV
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -342,35 +393,36 @@ jobs:
       - name: Create staging release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.get_version.outputs.version }}-staging
-          name: "R2MIDI v${{ steps.get_version.outputs.version }} - Release"
+          tag_name: v${{ needs.extract-version.outputs.version }}-staging
+          name: "R2MIDI v${{ needs.extract-version.outputs.version }} - Release"
           draft: true
           prerelease: true
           files: release_artifacts/*
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
-            ## 🚀 R2MIDI v${{ steps.get_version.outputs.version }} - Release
+            ## 🚀 R2MIDI v${{ needs.extract-version.outputs.version }} - Release
 
             ### 📦 Available Platforms
 
             - 🐧 **Linux**: Production-ready packages
-              - **Install**: `R2MIDI-*-linux-v${{ steps.get_version.outputs.version }}.deb`
-              - **Portable**: `R2MIDI-*-linux-v${{ steps.get_version.outputs.version }}.tar.gz`
+              - **Install**: `R2MIDI-*-linux-v${{ needs.extract-version.outputs.version }}.deb`
+              - **Portable**: `R2MIDI-*-linux-v${{ needs.extract-version.outputs.version }}.tar.gz`
 
-            - 🍎 **macOS**: Signed and Notarized ✨
-              - **Installer**: `R2MIDI-*-v${{ steps.get_version.outputs.version }}.pkg` (Recommended)
-              - **Disk Image**: `R2MIDI-*-v${{ steps.get_version.outputs.version }}.dmg`
-              - ✅ **No security warnings!**
+            - 🍎 **macOS**: Signed and Notarized with Native Tools ✨
+              - **Installer**: `R2MIDI-*-v${{ needs.extract-version.outputs.version }}.pkg` (Recommended)
+              - **Disk Image**: `R2MIDI-*-v${{ needs.extract-version.outputs.version }}.dmg`
+              - ✅ **No security warnings! Built with py2app + codesign + pkgbuild + notarytool**
+              - 🚫 **No more Briefcase failures!**
 
             - 🪟 **Windows**: Unsigned (Testing)
-              - **Portable**: `R2MIDI-*-windows-v${{ steps.get_version.outputs.version }}.zip`
+              - **Portable**: `R2MIDI-*-windows-v${{ needs.extract-version.outputs.version }}.zip`
               - ⚠️ Security warnings expected
 
             ### 📋 Installation
 
             **Linux:**
             ```bash
-            sudo dpkg -i R2MIDI-*-linux-v${{ steps.get_version.outputs.version }}.deb
+            sudo dpkg -i R2MIDI-*-linux-v${{ needs.extract-version.outputs.version }}.deb
             ```
 
             **macOS:**
@@ -383,11 +435,20 @@ jobs:
 
             | Platform | Status | Production Ready |
             |----------|--------|------------------|
-            | 🍎 macOS | ✅ Signed & Notarized | ✅ Yes |
+            | 🍎 macOS | ✅ Signed & Notarized (Native Tools) | ✅ Yes |
             | 🐧 Linux | ✅ No signing needed | ✅ Yes |
             | 🪟 Windows | ❌ Unsigned | ⚠️ Testing only |
 
+            ### 🔧 macOS Build Method 
+           
+            **Current (Working):** Native macOS tools
+            - ✅ **py2app** for building applications
+            - ✅ **codesign** for code signing  
+            - ✅ **pkgbuild** for PKG creation
+            - ✅ **notarytool** for Apple notarization
+            - ✅ **M3 Max self-hosted runner** for fastest builds
+
             ---
-            **🍎 macOS users: Fully signed and notarized!**  
+            **🍎 macOS users: Fully signed and notarized with native tools - no more Briefcase failures!**  
             **🐧 Linux users: Production ready!**  
             **🪟 Windows users: Signed packages coming soon!**
