@@ -25,6 +25,15 @@ if [ "$IS_M3_MAX" = "true" ]; then
     echo "🚀 M3 Max: Using $CPU_CORES cores for compilation"
 fi
 
+# Disable Qt-related recipes to prevent conflicts
+export PY2APP_DISABLE_QT_RECIPES=1
+export DYLD_LIBRARY_PATH=""
+# Additional environment variables to prevent Qt detection
+export QT_API=""
+export PYQT_VERSION=""
+# Tell py2app to ignore Qt packages completely
+export PY2APP_IGNORE_PACKAGES="PyQt6,PyQt5,PySide6,PySide2,qt6,qt5,sip"
+
 # Check if server directory exists
 if [ ! -d "../../server" ]; then
     echo "❌ Server directory not found at ../../server"
@@ -47,6 +56,32 @@ import os
 
 # Add the server directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'server'))
+
+# Disable Qt recipes explicitly
+os.environ['PY2APP_DISABLE_QT_RECIPES'] = '1'
+os.environ['QT_API'] = ''
+os.environ['PYQT_VERSION'] = ''
+
+# Import py2app and patch the recipe system to disable Qt recipes
+try:
+    import py2app.recipes.qt6
+    # Monkey patch the qt6 recipe to always return False
+    original_check = py2app.recipes.qt6.check
+    def disabled_qt6_check(*args, **kwargs):
+        return False
+    py2app.recipes.qt6.check = disabled_qt6_check
+except (ImportError, AttributeError):
+    pass  # Qt6 recipe not available or already disabled
+
+try:
+    import py2app.recipes.qt5
+    # Also disable qt5 recipe
+    original_check = py2app.recipes.qt5.check
+    def disabled_qt5_check(*args, **kwargs):
+        return False
+    py2app.recipes.qt5.check = disabled_qt5_check
+except (ImportError, AttributeError):
+    pass  # Qt5 recipe not available or already disabled
 
 APP = [os.path.join('..', '..', 'server', 'main.py')]
 DATA_FILES = []
@@ -71,11 +106,34 @@ OPTIONS = {
         'LSMinimumSystemVersion': '11.0',
         'LSApplicationCategoryType': 'public.app-category.utilities',
     },
-    'packages': ['fastapi', 'uvicorn', 'pydantic', 'rtmidi', 'mido', 'httpx', 'dotenv', 'git', 'psutil'],
+    # Only include server dependencies, nothing else
+    'packages': ['fastapi', 'uvicorn', 'pydantic', 'rtmidi', 'mido', 'httpx', 'dotenv', 'psutil'],
     'includes': ['server.main', 'server.api', 'server.models', 'server.utils'],
-    'excludes': ['tkinter', 'PyQt6', 'matplotlib', 'numpy', 'scipy'],
+    # Aggressively exclude all GUI and Qt packages
+    'excludes': [
+        # Qt packages
+        'PyQt6', 'PyQt5', 'PySide6', 'PySide2', 'qt6', 'qt5', 'sip',
+        'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets', 'PyQt6.sip',
+        'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets', 'PyQt5.sip',
+        # Other GUI frameworks
+        'tkinter', 'matplotlib', 'numpy', 'scipy', 'pandas', 'jupyter', 'notebook',
+        'wx', 'gtk', 'kivy', 'pygame', 'pyglet',
+        # Test frameworks
+        'test', 'tests', 'unittest', 'pytest', 'doctest',
+        # Development tools
+        'setuptools', 'pip', 'wheel', 'distutils'
+    ],
     'strip': False,
     'optimize': 0,
+    'no_strip': True,
+    'semi_standalone': False,
+    'recipe_path': [],  # Disable recipe path to avoid Qt6 recipe
+    'graph': True,
+    'debug_modulegraph': False,
+    # Prevent automatic dependency scanning that finds Qt
+    'site_packages': True,  # Still need to find our dependencies
+    'alias': False,
+    'use_pythonpath': True,  # Need this to find server modules
 }
 
 setup(
@@ -95,10 +153,114 @@ echo "🔧 Build command: python3 setup.py py2app"
 if python3 setup.py py2app; then
     echo "✅ py2app build completed successfully"
 else
-    echo "❌ py2app build failed for server"
-    echo "📋 Build output directory contents:"
-    ls -la . || true
-    exit 1
+    echo "⚠️ py2app build failed, trying minimal build approach..."
+    
+    # Create a minimal setup.py without automatic dependency detection
+    cat > setup_minimal.py << EOF
+from setuptools import setup
+import py2app
+import sys
+import os
+
+# Disable all automatic recipes
+os.environ['PY2APP_DISABLE_QT_RECIPES'] = '1'
+os.environ['PY2APP_VERBOSE'] = '1'
+
+APP = [os.path.join('..', '..', 'server', 'main.py')]
+
+OPTIONS = {
+    'argv_emulation': False,
+    'includes': ['fastapi', 'uvicorn', 'pydantic', 'rtmidi', 'mido', 'httpx', 'dotenv', 'psutil'],
+    'excludes': [
+        'PyQt6', 'PyQt5', 'PySide6', 'PySide2', 'qt6', 'qt5', 'sip',
+        'tkinter', 'matplotlib', 'numpy', 'scipy', 'wx', 'gtk'
+    ],
+    'plist': {
+        'CFBundleName': 'R2MIDI Server',
+        'CFBundleDisplayName': 'R2MIDI Server',
+        'CFBundleIdentifier': 'com.tirans.m2midi.r2midi.server',
+        'CFBundleVersion': '$VERSION',
+        'CFBundleShortVersionString': '$VERSION',
+    },
+    'optimize': 0,
+    'compressed': False,
+    'use_pythonpath': True,
+}
+
+setup(
+    app=APP,
+    options={'py2app': OPTIONS},
+    setup_requires=['py2app'],
+)
+EOF
+    
+    echo "🔧 Trying minimal build..."
+    if python3 setup_minimal.py py2app; then
+        echo "✅ Minimal py2app build completed successfully"
+    else
+        echo "⚠️ Minimal build also failed, trying manual inclusion approach..."
+        
+        # Create a completely manual setup that only includes what we explicitly want
+        cat > setup_manual.py << 'MANUAL_EOF'
+from setuptools import setup
+import py2app
+import sys
+import os
+
+# Completely disable automatic detection
+os.environ['PY2APP_VERBOSE'] = '0'
+
+APP = [os.path.join('..', '..', 'server', 'main.py')]
+
+# Only include exactly what we need, nothing automatic
+OPTIONS = {
+    'argv_emulation': False,
+    'site_packages': False,  # Don't include all site packages
+    'alias': False,
+    'semi_standalone': True,  # Don't try to include everything
+    'includes': [
+        'server', 'server.main', 'fastapi', 'uvicorn', 'pydantic', 
+        'rtmidi', 'mido', 'httpx', 'dotenv', 'psutil', 'json', 'os', 
+        'sys', 'asyncio', 'logging', 'pathlib', 'typing'
+    ],
+    'excludes': [
+        'PyQt6', 'PyQt5', 'PySide6', 'PySide2', 'qt6', 'qt5', 'sip',
+        'tkinter', 'test', 'tests', 'unittest', 'doctest',
+        'matplotlib', 'numpy', 'scipy', 'pandas', 'jupyter',
+        'wx', 'gtk', 'kivy', 'pygame', 'pyglet'
+    ],
+    'plist': {
+        'CFBundleName': 'R2MIDI Server',
+        'CFBundleDisplayName': 'R2MIDI Server', 
+        'CFBundleIdentifier': 'com.tirans.m2midi.r2midi.server',
+        'CFBundleVersion': '$VERSION',
+        'CFBundleShortVersionString': '$VERSION',
+    },
+    'optimize': 0,
+    'strip': False,
+    'iconfile': None,
+}
+
+setup(
+    name='R2MIDI Server',
+    app=APP,
+    options={'py2app': OPTIONS},
+    setup_requires=['py2app'],
+)
+MANUAL_EOF
+        
+        echo "🔧 Trying manual inclusion build..."
+        if python3 setup_manual.py py2app; then
+            echo "✅ Manual inclusion build completed successfully"
+        else
+            echo "❌ All py2app build approaches failed for server"
+            echo "📋 Build output directory contents:"
+            ls -la . || true
+            echo "🔍 Python path and server module check:"
+            python3 -c "import sys; print('Python path:'); [print(f'  {p}') for p in sys.path[:5]]; print('\nServer module check:'); import os; print(f'Server dir exists: {os.path.exists(\"../../server\")}')"
+            exit 1
+        fi
+    fi
 fi
 
 # Check build results

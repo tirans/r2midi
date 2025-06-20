@@ -129,7 +129,27 @@ jobs:
       - name: Build Server App with py2app
         shell: bash
         run: |
-          ./.github/scripts/build-server-app.sh "${{ steps.config.outputs.version }}"
+          # Check if Qt packages are present that might cause conflicts
+          echo "🔍 Checking for Qt package conflicts..."
+          QT_PACKAGES=$(python3 -c "
+          try:
+              import pkg_resources
+              qt_count = 0
+              for pkg in pkg_resources.working_set:
+                  if any(qt_name in pkg.project_name.lower() for qt_name in ['qt', 'pyqt', 'pyside']):
+                      qt_count += 1
+              print(qt_count)
+          except:
+              print('0')
+          ")
+          
+          if [ "$QT_PACKAGES" -gt 0 ]; then
+            echo "⚠️ Found $QT_PACKAGES Qt packages - using isolated build approach"
+            ./.github/scripts/build-server-app-isolated.sh "${{ steps.config.outputs.version }}"
+          else
+            echo "✅ No Qt packages detected - using standard build approach"
+            ./.github/scripts/build-server-app.sh "${{ steps.config.outputs.version }}"
+          fi
 
       - name: Build Client App with py2app
         shell: bash

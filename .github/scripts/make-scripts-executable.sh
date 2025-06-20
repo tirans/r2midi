@@ -30,6 +30,7 @@ NEW_SCRIPTS=(
     "install-dependencies.sh"
     "setup-apple-certificates.sh"
     "build-server-app.sh"
+    "build-server-app-isolated.sh"
     "build-client-app.sh"
     "sign-apps.sh"
     "create-pkg-installers.sh"
@@ -37,6 +38,7 @@ NEW_SCRIPTS=(
     "notarize-packages.sh"
     "create-build-report.sh"
     "cleanup-build.sh"
+    "debug-server-dependencies.sh"
     "make-scripts-executable.sh"
 )
 
