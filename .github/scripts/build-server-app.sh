@@ -56,6 +56,7 @@ import os
 
 # Add the server directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'server'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 # Disable Qt recipes explicitly
 os.environ['PY2APP_DISABLE_QT_RECIPES'] = '1'
@@ -108,7 +109,10 @@ OPTIONS = {
     },
     # Only include server dependencies, nothing else
     'packages': ['fastapi', 'uvicorn', 'pydantic', 'rtmidi', 'mido', 'httpx', 'dotenv', 'psutil'],
-    'includes': ['server.main', 'server.api', 'server.models', 'server.utils'],
+    'includes': [
+        'server.main', 'server.api', 'server.models', 'server.utils',
+        'server.device_manager', 'server.git_operations', 'server.midi_utils', 'server.version'
+    ],
     # Aggressively exclude all GUI and Qt packages
     'excludes': [
         # Qt packages
@@ -170,7 +174,11 @@ APP = [os.path.join('..', '..', 'server', 'main.py')]
 
 OPTIONS = {
     'argv_emulation': False,
-    'includes': ['fastapi', 'uvicorn', 'pydantic', 'rtmidi', 'mido', 'httpx', 'dotenv', 'psutil'],
+    'includes': [
+        'fastapi', 'uvicorn', 'pydantic', 'rtmidi', 'mido', 'httpx', 'dotenv', 'psutil',
+        'server.main', 'server.device_manager', 'server.git_operations', 'server.midi_utils', 
+        'server.models', 'server.version'
+    ],
     'excludes': [
         'PyQt6', 'PyQt5', 'PySide6', 'PySide2', 'qt6', 'qt5', 'sip',
         'tkinter', 'matplotlib', 'numpy', 'scipy', 'wx', 'gtk'
@@ -217,7 +225,9 @@ OPTIONS = {
     'argv_emulation': False,
     'includes': [
         'fastapi', 'uvicorn', 'pydantic', 'rtmidi', 'mido', 
-        'httpx', 'dotenv', 'psutil', 'json', 'os', 'sys', 'logging'
+        'httpx', 'dotenv', 'psutil', 'json', 'os', 'sys', 'logging',
+        'server.main', 'server.device_manager', 'server.git_operations', 
+        'server.midi_utils', 'server.models', 'server.version'
     ],
     'excludes': [
         'PyQt6', 'PyQt5', 'PySide6', 'PySide2', 'qt6', 'qt5', 'sip',
@@ -256,19 +266,25 @@ fi
 
 # Check build results
 echo "🔍 Checking build results..."
-if [ -d "dist/main.app" ]; then
+
+# py2app might create the app with the correct name directly or as main.app
+APP_CREATED=""
+if [ -d "dist/R2MIDI Server.app" ]; then
+    APP_CREATED="dist/R2MIDI Server.app"
+    echo "✅ Server app already has correct name: $APP_CREATED"
+elif [ -d "dist/main.app" ]; then
     # Rename the app to proper display name
     mv "dist/main.app" "dist/R2MIDI Server.app"
-    echo "✅ Server app built successfully with py2app: dist/R2MIDI Server.app"
-    echo "📊 App bundle size: $(du -sh "dist/R2MIDI Server.app" | cut -f1)"
-    echo "📁 App bundle contents:"
-    ls -la "dist/R2MIDI Server.app"
+    APP_CREATED="dist/R2MIDI Server.app"
+    echo "✅ Server app renamed from main.app: $APP_CREATED"
 else
-    echo "❌ Server app build failed - main.app not found"
+    echo "❌ Server app build failed - no app bundle found"
     echo "📁 dist/ directory contents:"
     ls -la dist/ || echo "dist/ directory not found"
     exit 1
 fi
+
+echo "📊 App bundle size: $(du -sh "$APP_CREATED" | cut -f1)"
 
 # Verify app structure
 echo "🔍 Verifying app bundle structure..."

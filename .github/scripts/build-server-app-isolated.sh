@@ -38,7 +38,8 @@ echo "📦 Site packages: $SITE_PACKAGES"
 
 # Set PYTHONPATH to completely exclude the original site-packages
 # This prevents any Qt packages from being found
-export PYTHONPATH="../../:$(pwd)/../..:$ORIGINAL_PYTHONPATH"
+# Add server directory explicitly to help with relative imports
+export PYTHONPATH="$(pwd)/../../server:../../:$(pwd)/../..:$ORIGINAL_PYTHONPATH"
 
 # Create a list of critical packages we need for the build
 echo "📦 Installing essential packages to virtual environment..."
@@ -122,8 +123,9 @@ from setuptools import setup
 import sys
 import os
 
-# Ensure server is importable
+# Ensure server is importable - add both server dir and project root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'server'))
 
 # Completely manual py2app configuration
 import py2app
@@ -146,10 +148,13 @@ OPTIONS = {
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '11.0',
     },
-    # Manually specify only what we need
+    # Manually specify only what we need + server modules
     'includes': [
         'fastapi', 'uvicorn', 'pydantic', 'rtmidi', 'mido', 
-        'httpx', 'dotenv', 'psutil', 'logging', 'json', 'os', 'sys'
+        'httpx', 'dotenv', 'psutil', 'logging', 'json', 'os', 'sys',
+        # Include server modules explicitly
+        'server', 'server.main', 'server.device_manager', 'server.git_operations',
+        'server.midi_utils', 'server.models', 'server.version'
     ],
     # Aggressively exclude everything Qt-related
     'excludes': [
@@ -160,7 +165,9 @@ OPTIONS = {
     'optimize': 0,
     'strip': False,
     'compressed': False,
-    'use_pythonpath': False,  # Don't use system PYTHONPATH
+    'use_pythonpath': True,  # Use our custom PYTHONPATH
+    # Add server directory to resources
+    'resources': [os.path.join('..', '..', 'server')],
 }
 
 setup(
@@ -208,13 +215,19 @@ fi
 
 # Check build results
 echo "🔍 Checking build results..."
-if [ -d "dist/main.app" ]; then
+
+# py2app might create the app with the correct name directly or as main.app
+APP_CREATED=""
+if [ -d "dist/R2MIDI Server.app" ]; then
+    APP_CREATED="dist/R2MIDI Server.app"
+    echo "✅ Server app already has correct name: $APP_CREATED"
+elif [ -d "dist/main.app" ]; then
     # Rename the app to proper display name
     mv "dist/main.app" "dist/R2MIDI Server.app"
-    echo "✅ Server app built successfully: dist/R2MIDI Server.app"
-    echo "📊 App bundle size: $(du -sh "dist/R2MIDI Server.app" | cut -f1)"
+    APP_CREATED="dist/R2MIDI Server.app"
+    echo "✅ Server app renamed from main.app: $APP_CREATED"
 else
-    echo "❌ Server app build failed - main.app not found"
+    echo "❌ Server app build failed - no app bundle found"
     echo "📁 dist/ directory contents:"
     ls -la dist/ || echo "dist/ directory not found"
     
@@ -222,6 +235,8 @@ else
     rm -rf temp_packages requirements_server_only.txt
     exit 1
 fi
+
+echo "📊 App bundle size: $(du -sh "$APP_CREATED" | cut -f1)"
 
 # Verify app structure
 echo "🔍 Verifying app bundle structure..."
