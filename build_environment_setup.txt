@@ -1,16 +1,16 @@
 R2MIDI Build Environment Setup Summary
 ======================================
 
-Setup Date: 2025-06-16 13:18:48 UTC
-Platform: Darwin arm64
-Working Directory: /Users/tirane/Desktop/r2midi
-Python Version: Python 3.12.9
+Setup Date: 2025-06-20 07:45:50 UTC
+Platform: Linux x86_64
+Working Directory: /home/runner/work/r2midi/r2midi
+Python Version: Python 3.12.3
 Git Version: git version 2.49.0
 
 Environment Variables:
-- PYTHONPATH: /Users/tirane/Desktop/r2midi:
-- APP_VERSION: 0.1.164
-- GITHUB_ACTIONS: false
+- PYTHONPATH: /home/runner/work/r2midi/r2midi:
+- APP_VERSION: 0.1.175
+- GITHUB_ACTIONS: true
 
 Build Directories:
 - build/: ✅ Created
