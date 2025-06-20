@@ -165,44 +165,44 @@ jobs:
 
           echo "✅ Briefcase signing and entitlements configuration completed"
 
-      - name: ⚡ Build applications (M3 Max Parallel Power)
+      - name: ⚡ Build and package applications with proper signing (M3 Max Parallel Power)
         shell: bash
         run: |
-          echo "🚀 Building apps with M3 Max parallel processing..."
+          echo "🚀 Building and packaging apps with Developer ID signing using M3 Max parallel processing..."
 
           # Export Python path for briefcase
           export PYTHONPATH="${PWD}:${PYTHONPATH:-}"
 
-          # Build both apps in parallel (M3 Max can handle this easily)
-          echo "📦 Starting parallel builds..."
+          # Package both apps in parallel (includes build + proper signing)
+          echo "📦 Starting parallel packaging with Developer ID signing..."
           (
-            echo "🖥️ Building server app..."
-            briefcase build macos app -a server
+            echo "🖥️ Packaging server app with Developer ID signing..."
+            briefcase package macos app -a server
           ) &
           server_pid=$!
 
           (
-            echo "🖥️ Building client app..."  
-            briefcase build macos app -a r2midi-client
+            echo "🖥️ Packaging client app with Developer ID signing..."  
+            briefcase package macos app -a r2midi-client
           ) &
           client_pid=$!
 
           # Wait for both with progress
-          echo "⏳ Waiting for parallel builds on M3 Max..."
+          echo "⏳ Waiting for parallel packaging on M3 Max..."
           wait $server_pid
           server_result=$?
-          echo "✅ Server build completed (exit: $server_result)"
+          echo "✅ Server packaging completed (exit: $server_result)"
 
           wait $client_pid  
           client_result=$?
-          echo "✅ Client build completed (exit: $client_result)"
+          echo "✅ Client packaging completed (exit: $client_result)"
 
           if [ $server_result -ne 0 ] || [ $client_result -ne 0 ]; then
-            echo "❌ App build failed"
+            echo "❌ App packaging failed"
             exit 1
           fi
 
-          echo "🚀 Both apps built successfully with M3 Max parallel processing!"
+          echo "🚀 Both apps packaged successfully with Developer ID signing using M3 Max parallel processing!"
 
       - name: ⚡ Create optimized PKG installers
         id: pkg_creation

@@ -251,30 +251,30 @@ configure_signing() {
 
 # Function to build applications
 build_applications() {
-    print_step "Building applications..."
+    print_step "Building and packaging applications with proper signing..."
 
     # Export Python path for briefcase
     export PYTHONPATH="${PWD}:${PYTHONPATH:-}"
 
-    # Build server app
-    print_status $BLUE "Building server app..."
-    if briefcase build macos app -a server; then
-        print_success "Server app built successfully"
+    # Package server app (includes build + proper signing)
+    print_status $BLUE "Packaging server app with Developer ID signing..."
+    if briefcase package macos app -a server; then
+        print_success "Server app packaged successfully with proper signing"
     else
-        print_error "Server app build failed"
+        print_error "Server app packaging failed"
         return 1
     fi
 
-    # Build client app
-    print_status $BLUE "Building client app..."
-    if briefcase build macos app -a r2midi-client; then
-        print_success "Client app built successfully"
+    # Package client app (includes build + proper signing)
+    print_status $BLUE "Packaging client app with Developer ID signing..."
+    if briefcase package macos app -a r2midi-client; then
+        print_success "Client app packaged successfully with proper signing"
     else
-        print_error "Client app build failed"
+        print_error "Client app packaging failed"
         return 1
     fi
 
-    print_success "Both applications built successfully"
+    print_success "Both applications packaged successfully with proper signing"
 }
 
 # Function to create PKG installers
