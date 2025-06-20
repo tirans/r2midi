@@ -14,6 +14,10 @@ echo "Version Type: $VERSION_TYPE"
 git config --local user.name "GitHub Action"
 git config --local user.email "action@github.com"
 
+# Get current branch name
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+echo "Current branch: $CURRENT_BRANCH"
+
 # Function to get current version from server/version.py
 get_current_version() {
     if [ -f "server/version.py" ]; then
@@ -168,6 +172,117 @@ EOF
     fi
 }
 
+# Improved push function with better retry logic
+push_with_retry() {
+    local max_retries=5
+    local base_delay=2
+    local max_delay=30
+    
+    for attempt in $(seq 1 $max_retries); do
+        echo "🔄 Push attempt $attempt of $max_retries..."
+        
+        # First, try to sync with remote
+        echo "📥 Fetching latest changes from remote..."
+        if ! git fetch origin "$CURRENT_BRANCH"; then
+            echo "⚠️ Failed to fetch from origin, continuing anyway..."
+        fi
+        
+        # Check if we're behind the remote
+        LOCAL=$(git rev-parse HEAD)
+        REMOTE=$(git rev-parse "origin/$CURRENT_BRANCH" 2>/dev/null || echo "")
+        
+        if [ -n "$REMOTE" ] && [ "$LOCAL" != "$REMOTE" ]; then
+            echo "📦 Local branch is behind remote, attempting rebase..."
+            
+            # Try to rebase our changes onto the latest remote
+            if git rebase "origin/$CURRENT_BRANCH"; then
+                echo "✅ Successfully rebased onto latest remote changes"
+            else
+                echo "❌ Rebase failed, likely due to conflicts"
+                
+                # Check if there are conflicts
+                if git status --porcelain | grep -q "^UU\|^AA\|^DD"; then
+                    echo "🔧 Attempting to auto-resolve version conflicts..."
+                    
+                    # Try to auto-resolve conflicts in our modified files
+                    local conflict_resolved=true
+                    for file in server/version.py pyproject.toml CHANGELOG.md; do
+                        if [ -f "$file" ] && git status --porcelain | grep -q "^UU.*$file"; then
+                            echo "🔧 Auto-resolving conflict in $file..."
+                            # Use our version (the working tree version)
+                            git add "$file"
+                        fi
+                    done
+                    
+                    # Continue rebase if all conflicts are resolved
+                    if git rebase --continue; then
+                        echo "✅ Auto-resolved conflicts and continued rebase"
+                    else
+                        echo "❌ Could not auto-resolve conflicts, aborting rebase"
+                        git rebase --abort
+                        conflict_resolved=false
+                    fi
+                    
+                    if [ "$conflict_resolved" = false ]; then
+                        if [ $attempt -eq $max_retries ]; then
+                            echo "❌ Failed to resolve conflicts after $max_retries attempts"
+                            return 1
+                        fi
+                        
+                        # Wait with exponential backoff and try again
+                        local delay=$((base_delay * 2**(attempt-1)))
+                        if [ $delay -gt $max_delay ]; then
+                            delay=$max_delay
+                        fi
+                        echo "⏳ Waiting ${delay}s before retry..."
+                        sleep $delay
+                        continue
+                    fi
+                else
+                    echo "❌ Rebase failed for unknown reasons"
+                    git rebase --abort
+                    
+                    if [ $attempt -eq $max_retries ]; then
+                        return 1
+                    fi
+                    
+                    # Wait with exponential backoff and try again
+                    local delay=$((base_delay * 2**(attempt-1)))
+                    if [ $delay -gt $max_delay ]; then
+                        delay=$max_delay
+                    fi
+                    echo "⏳ Waiting ${delay}s before retry..."
+                    sleep $delay
+                    continue
+                fi
+            fi
+        fi
+        
+        # Try to push
+        if git push origin "$CURRENT_BRANCH"; then
+            echo "✅ Successfully pushed to origin/$CURRENT_BRANCH"
+            return 0
+        else
+            echo "⚠️ Push attempt $attempt failed"
+            
+            if [ $attempt -eq $max_retries ]; then
+                echo "❌ Failed to push after $max_retries attempts"
+                return 1
+            fi
+            
+            # Wait with exponential backoff before retry
+            local delay=$((base_delay * 2**(attempt-1)))
+            if [ $delay -gt $max_delay ]; then
+                delay=$max_delay
+            fi
+            echo "⏳ Waiting ${delay}s before retry..."
+            sleep $delay
+        fi
+    done
+    
+    return 1
+}
+
 # Main version update workflow
 echo "🔍 Getting current version..."
 CURRENT_VERSION=$(get_current_version)
@@ -228,32 +343,14 @@ else
     echo "✅ Committed version changes"
 fi
 
-# Push changes with retry logic for CI environments
+# Push changes with improved retry logic
 echo "📤 Pushing version changes..."
-
-# First, try to pull any remote changes
-if ! git pull --rebase origin HEAD 2>/dev/null; then
-    echo "⚠️ Pull failed, continuing with push attempt..."
+if push_with_retry; then
+    echo "✅ Successfully pushed version changes"
+else
+    echo "❌ Failed to push version changes"
+    exit 1
 fi
-
-# Try to push with retry logic
-PUSH_RETRIES=3
-for i in $(seq 1 $PUSH_RETRIES); do
-    if git push origin HEAD; then
-        echo "✅ Successfully pushed version changes"
-        break
-    else
-        echo "⚠️ Push attempt $i failed"
-        if [ $i -lt $PUSH_RETRIES ]; then
-            echo "🔄 Retrying after pull..."
-            git pull --rebase origin HEAD 2>/dev/null || true
-            sleep 2
-        else
-            echo "❌ Failed to push after $PUSH_RETRIES attempts"
-            exit 1
-        fi
-    fi
-done
 
 # Create and push Git tag with retry logic
 echo "🏷️ Creating Git tag..."
@@ -268,6 +365,7 @@ Changes:
 - See CHANGELOG.md for details"
 
 echo "📤 Pushing tag..."
+PUSH_RETRIES=3
 for i in $(seq 1 $PUSH_RETRIES); do
     if git push origin "v$NEW_VERSION"; then
         echo "✅ Successfully pushed tag: v$NEW_VERSION"
@@ -276,7 +374,7 @@ for i in $(seq 1 $PUSH_RETRIES); do
         echo "⚠️ Tag push attempt $i failed"
         if [ $i -lt $PUSH_RETRIES ]; then
             echo "🔄 Retrying tag push..."
-            sleep 2
+            sleep $((2 * i))
         else
             echo "⚠️ Failed to push tag after $PUSH_RETRIES attempts (continuing anyway)"
             break
