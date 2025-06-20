@@ -9,13 +9,13 @@ EVENT_NAME=${1:-"push"}
 INPUT_VERSION=${2:-""}
 INPUT_BUILD_TYPE=${3:-""}
 INPUT_RUNNER_TYPE=${4:-"self-hosted"}
-DEFAULT_BUILD_TYPE=${5:-"dev"}
+DEFAULT_BUILD_TYPE=${5:-"production"}  # Changed default to production
 
 echo "🔧 Configuring build parameters..."
 
 # Function to extract version from pyproject.toml with multiple fallbacks
 extract_version() {
-    echo "📋 Extracting version from pyproject.toml..."
+    echo "📋 Extracting version from pyproject.toml..." >&2
     
     # Method 1: Try tomllib (Python 3.11+)
     local version=$(python3 -c "
@@ -26,8 +26,8 @@ print(config['project']['version'])
 " 2>/dev/null || echo "")
     
     if [ -n "$version" ] && [ "$version" != "" ]; then
-        echo "✅ Version extracted with tomllib: $version"
-        echo "$version"
+        echo "✅ Version extracted with tomllib: $version" >&2
+        echo "$version"  # Only output version to stdout
         return 0
     fi
     
@@ -40,8 +40,8 @@ print(config['project']['version'])
 " 2>/dev/null || echo "")
     
     if [ -n "$version" ] && [ "$version" != "" ]; then
-        echo "✅ Version extracted with toml: $version"
-        echo "$version"
+        echo "✅ Version extracted with toml: $version" >&2
+        echo "$version"  # Only output version to stdout
         return 0
     fi
     
@@ -49,14 +49,14 @@ print(config['project']['version'])
     version=$(grep -E '^version = ".*"' pyproject.toml | sed 's/version = "\(.*\)"/\1/' 2>/dev/null || echo "")
     
     if [ -n "$version" ] && [ "$version" != "" ]; then
-        echo "✅ Version extracted with regex: $version"
-        echo "$version"
+        echo "✅ Version extracted with regex: $version" >&2
+        echo "$version"  # Only output version to stdout
         return 0
     fi
     
     # Method 4: Default fallback
-    echo "⚠️ Could not extract version from pyproject.toml, using default"
-    echo "0.1.0"
+    echo "⚠️ Could not extract version from pyproject.toml, using default" >&2
+    echo "0.1.0"  # Only output version to stdout
 }
 
 # Determine version and build type based on trigger
@@ -73,7 +73,8 @@ else
     BUILD_TYPE="$DEFAULT_BUILD_TYPE"
 fi
 
-# Validate extracted version
+# Validate extracted version (clean up any extra whitespace)
+VERSION=$(echo "$VERSION" | tr -d '\n' | tr -d '\r' | xargs)
 if [ -z "$VERSION" ] || [ "$VERSION" = "" ]; then
     echo "⚠️ Warning: Could not extract version, using default"
     VERSION="0.1.0"
@@ -87,9 +88,11 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
 fi
 
 # Export as environment variables for other scripts
-echo "VERSION=$VERSION" >> "${GITHUB_ENV:-/dev/null}"
-echo "BUILD_TYPE=$BUILD_TYPE" >> "${GITHUB_ENV:-/dev/null}"
-echo "RUNNER_TYPE=$INPUT_RUNNER_TYPE" >> "${GITHUB_ENV:-/dev/null}"
+{
+    echo "VERSION=$VERSION"
+    echo "BUILD_TYPE=$BUILD_TYPE"
+    echo "RUNNER_TYPE=$INPUT_RUNNER_TYPE"
+} >> "${GITHUB_ENV:-/dev/null}"
 
 echo ""
 echo "📋 Build Configuration Summary:"
@@ -97,6 +100,7 @@ echo "  Version: $VERSION"
 echo "  Build Type: $BUILD_TYPE"
 echo "  Runner: $INPUT_RUNNER_TYPE"
 echo "  Trigger: $EVENT_NAME"
+echo "  Default Build Type: $DEFAULT_BUILD_TYPE"
 echo ""
 
 # Output for scripts that source this

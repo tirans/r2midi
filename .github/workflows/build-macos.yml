@@ -56,7 +56,7 @@ on:
           - dev
           - staging
           - production
-        default: 'dev'
+        default: 'production'
       runner-type:
         description: 'Runner type'
         required: false
@@ -70,7 +70,7 @@ on:
 
 env:
   # Default build type for push/PR triggers
-  DEFAULT_BUILD_TYPE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'production' || 'dev' }}
+  DEFAULT_BUILD_TYPE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'production' || 'production' }}
 
 jobs:
   build-macos-native:
