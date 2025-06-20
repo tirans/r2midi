@@ -1,5 +1,4 @@
 #!/bin/bash
-set -euo pipefail
 
 # Make this script executable first
 chmod +x "$0" 2>/dev/null || true
@@ -26,15 +25,19 @@ done
 
 # Specifically ensure the new scripts are executable
 NEW_SCRIPTS=(
-    "install-system-dependencies.sh"
-    "install-python-dependencies.sh"
-    "setup-environment.sh"
-    "extract-version.sh"
-    "generate-build-summary.sh"
-    "setup-macos-signing.sh"
-    "create-macos-pkg.sh"
-    "create-macos-dmg-fallback.sh"
-    "validate-macos-distribution.sh"
+    "configure-build.sh"
+    "setup-python-environment.sh"
+    "install-dependencies.sh"
+    "setup-apple-certificates.sh"
+    "build-server-app.sh"
+    "build-client-app.sh"
+    "sign-apps.sh"
+    "create-pkg-installers.sh"
+    "create-dmg-installers.sh"
+    "notarize-packages.sh"
+    "create-build-report.sh"
+    "cleanup-build.sh"
+    "make-scripts-executable.sh"
 )
 
 echo ""
@@ -53,10 +56,11 @@ for script in "${NEW_SCRIPTS[@]}"; do
 done
 
 echo ""
-echo "📋 All GitHub Actions scripts:"
+echo "📋 All executable scripts in $SCRIPTS_DIR:"
 find "$SCRIPTS_DIR" -name "*.sh" -type f -executable | sort | while read script; do
-    echo "  - $(basename "$script")"
+    echo "  ✅ $(basename "$script")"
 done
 
 echo ""
 echo "✅ All scripts are now executable!"
+echo "🎯 Ready for GitHub Actions workflow execution"
