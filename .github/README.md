@@ -27,25 +27,7 @@ I've successfully cleaned up and prioritized my modular GitHub Actions solution,
 - **`setup-scripts.sh`** - Script utilities (line endings, permissions)
 - **`setup-clean-workflows.sh`** - Setup validation script
 
-## 🧹 Files Cleaned Up
-
-### Moved to `.old` (Conflicting Files)
-- `reusable-build.yml.old` - Conflicted with my modular approach
-- `reusable-test.yml.old` - Conflicted with my ci.yml
-- `macos-native.yml.old` - Conflicted with my build-macos.yml
-- `app-store.yml.old` - Not part of my solution
-- `build-briefcase.sh.old` - Replaced by my build-briefcase-apps.sh
-- `build-macos.sh.old` - Used py2app, conflicted with my Briefcase approach
-
-### Moved to `old_actions/` (Conflicting Custom Actions)
-- All custom actions moved - my solution uses simple shell scripts instead
-
-### Moved to `old_docs/` (Outdated Documentation)
-- Various old fix summary files that don't apply to my clean solution
-
-## 🎯 Key Benefits of Clean Setup
-
-### ✅ As Requested
+### ✅ Key Features
 - **Separated files** - No lengthy workflow files
 - **External scripts only** - Zero inline code in workflows
 - **Windows & Linux unsigned** - Built with Briefcase as requested

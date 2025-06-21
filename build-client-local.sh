@@ -103,6 +103,8 @@ if missing:
 # Copy setup file to build directory
 echo "📝 Preparing build configuration..."
 cp setup_client.py build_client/setup.py
+cp -r r2midi_client build_client/
+cp -r resources build_client/ 2>/dev/null || true
 
 # Change to build directory
 cd build_client
@@ -174,16 +176,16 @@ fi
 if [ "$SKIP_SIGNING" = "false" ]; then
     echo ""
     echo "🔐 Code signing client app..."
-    
+
     # Check for signing identity
     SIGNING_IDENTITY="Developer ID Application"
     if security find-identity -v -p codesigning | grep -q "$SIGNING_IDENTITY"; then
         echo "✅ Found signing identity: $SIGNING_IDENTITY"
-        
+
         # Sign the app
         echo "🔏 Signing app bundle..."
         codesign --force --options runtime --deep --sign "$SIGNING_IDENTITY" "$APP_PATH"
-        
+
         # Verify signature
         echo "🔍 Verifying signature..."
         if codesign --verify --verbose "$APP_PATH"; then
@@ -213,8 +215,7 @@ PKG_NAME="R2MIDI-Client-${VERSION}.pkg"
 INSTALLER_PATH="artifacts/${PKG_NAME}"
 
 # Create component package
-pkgbuild --root "dist" \
-         --identifier "com.r2midi.client" \
+pkgbuild --identifier "com.r2midi.client" \
          --version "$VERSION" \
          --install-location "/Applications" \
          --component "dist/R2MIDI Client.app" \
@@ -222,7 +223,7 @@ pkgbuild --root "dist" \
 
 if [ -f "$INSTALLER_PATH" ]; then
     echo "✅ PKG installer created: $INSTALLER_PATH"
-    
+
     # Show installer size
     if command -v du >/dev/null 2>&1; then
         pkg_size=$(du -sh "$INSTALLER_PATH" | cut -f1)
@@ -238,16 +239,16 @@ fi
 if [ "$SKIP_SIGNING" = "false" ]; then
     echo ""
     echo "🔐 Signing PKG installer..."
-    
+
     # Check for installer signing identity
     INSTALLER_SIGNING_IDENTITY="Developer ID Installer"
     if security find-identity -v -p codesigning | grep -q "$INSTALLER_SIGNING_IDENTITY"; then
         echo "✅ Found installer signing identity: $INSTALLER_SIGNING_IDENTITY"
-        
+
         # Sign the PKG
         echo "🔏 Signing PKG installer..."
         productsign --sign "$INSTALLER_SIGNING_IDENTITY" "$INSTALLER_PATH" "${INSTALLER_PATH}.signed"
-        
+
         if [ -f "${INSTALLER_PATH}.signed" ]; then
             mv "${INSTALLER_PATH}.signed" "$INSTALLER_PATH"
             echo "✅ PKG installer successfully signed"
@@ -272,23 +273,23 @@ fi
 if [ "$SKIP_NOTARIZATION" = "false" ] && [ "$SKIP_SIGNING" = "false" ]; then
     echo ""
     echo "📋 Notarizing PKG installer..."
-    
+
     # Check for notarization credentials
     if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_ID_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
         echo "✅ Found notarization credentials"
-        
+
         # Submit for notarization
         echo "🚀 Submitting to Apple for notarization..."
         NOTARIZATION_LOG="notarization_client_${VERSION}.log"
-        
+
         if xcrun notarytool submit "$INSTALLER_PATH" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait > "$NOTARIZATION_LOG" 2>&1; then
-            
+
             echo "✅ Notarization completed successfully"
-            
+
             # Staple the notarization
             echo "📎 Stapling notarization ticket..."
             if xcrun stapler staple "$INSTALLER_PATH"; then

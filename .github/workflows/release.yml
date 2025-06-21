@@ -209,8 +209,9 @@ jobs:
           name: R2MIDI v${{ needs.version.outputs.version || needs.extract-version.outputs.version }}
           files: release_files/*
           token: ${{ secrets.GITHUB_TOKEN }}
-          # Mark artifacts as release (not draft) since build passed review
+          # Ensure release is published (not draft) and not marked as prerelease
           draft: false
+          prerelease: false
           body: |
             ## 🚀 R2MIDI v${{ needs.version.outputs.version || needs.extract-version.outputs.version }}
 
