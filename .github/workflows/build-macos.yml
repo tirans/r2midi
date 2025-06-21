@@ -36,15 +36,25 @@ on:
         required: true
       APPLE_CERT_PASSWORD:
         required: true
+      APPLE_APP_STORE_CERTIFICATE_P12:
+        required: false
+      APPLE_APP_STORE_CERTIFICATE_PASSWORD:
+        required: false
       APPLE_ID:
         required: true
       APPLE_ID_PASSWORD:
         required: true
       APPLE_TEAM_ID:
         required: true
+      APP_STORE_CONNECT_API_KEY:
+        required: false
+      APP_STORE_CONNECT_ISSUER_ID:
+        required: false
+      APP_STORE_CONNECT_KEY_ID:
+        required: false
 
 jobs:
-  build-macos-enhanced:
+  build-macos-signed:
     name: 🍎 Enhanced macOS Build
     runs-on: ${{ inputs.runner-type || 'self-hosted' }}
     timeout-minutes: 45
@@ -73,9 +83,14 @@ jobs:
           APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
           APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_APP_STORE_CERTIFICATE_P12: ${{ secrets.APPLE_APP_STORE_CERTIFICATE_P12 }}
+          APPLE_APP_STORE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_APP_STORE_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
         run: |
           VERSION="${{ inputs.version || '1.0.0-ci' }}"
           BUILD_TYPE="${{ inputs.build-type || 'production' }}"
@@ -91,6 +106,6 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-enhanced-${{ github.run_number }}
+          name: macos-signed-${{ github.run_number }}
           path: artifacts/
           retention-days: 30

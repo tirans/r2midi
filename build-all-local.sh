@@ -4,15 +4,80 @@ set -euo pipefail
 
 echo "🚀 R2MIDI Build System with Certificate Management"
 
-# Check if certificates have been imported
-if [ ! -f ".local_build_env" ]; then
-    echo "⚠️ Certificates not imported. Running certificate setup first..."
+# Check if we're running in GitHub Actions
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "🔐 Running in GitHub Actions - setting up certificates from environment variables..."
+
+    # Create temporary certificate directory
+    mkdir -p /tmp/github_certs
+
+    # Decode and save Developer ID certificates
+    if [ -n "${APPLE_DEVELOPER_ID_APPLICATION_CERT:-}" ]; then
+        echo "$APPLE_DEVELOPER_ID_APPLICATION_CERT" | base64 --decode > /tmp/github_certs/app_cert.p12
+    else
+        echo "❌ APPLE_DEVELOPER_ID_APPLICATION_CERT not found in environment"
+        exit 1
+    fi
+
+    if [ -n "${APPLE_DEVELOPER_ID_INSTALLER_CERT:-}" ]; then
+        echo "$APPLE_DEVELOPER_ID_INSTALLER_CERT" | base64 --decode > /tmp/github_certs/installer_cert.p12
+    else
+        echo "❌ APPLE_DEVELOPER_ID_INSTALLER_CERT not found in environment"
+        exit 1
+    fi
+
+    # Decode and save App Store certificate if available
+    if [ -n "${APPLE_APP_STORE_CERTIFICATE_P12:-}" ]; then
+        echo "$APPLE_APP_STORE_CERTIFICATE_P12" | base64 --decode > /tmp/github_certs/app_store_cert.p12
+        echo "✅ App Store certificate available"
+        APP_STORE_CERT_AVAILABLE="true"
+    else
+        echo "⚠️ App Store certificate not available"
+        APP_STORE_CERT_AVAILABLE="false"
+    fi
+
+    # Create a temporary app_config.json for GitHub Actions
+    cat > /tmp/github_app_config.json << EOF
+{
+  "apple_developer": {
+    "team_id": "${APPLE_TEAM_ID}",
+    "p12_path": "/tmp/github_certs",
+    "p12_password": "${APPLE_CERT_PASSWORD}",
+    "app_store_p12_password": "${APPLE_APP_STORE_CERTIFICATE_PASSWORD:-${APPLE_CERT_PASSWORD}}",
+    "app_specific_password": "${APPLE_ID_PASSWORD}",
+    "apple_id": "${APPLE_ID}"
+  },
+  "build_options": {
+    "enable_notarization": true
+  }
+}
+EOF
+
+    # Set up environment to use GitHub certificates
+    export CONFIG_FILE="/tmp/github_app_config.json"
+
+    # Run certificate setup with GitHub certificates
     if [ -f "./setup-local-certificates.sh" ]; then
         chmod +x ./setup-local-certificates.sh
-        ./setup-local-certificates.sh
+        # Temporarily replace the config file path in the setup script
+        sed "s|apple_credentials/config/app_config.json|$CONFIG_FILE|g" ./setup-local-certificates.sh > /tmp/setup-github-certificates.sh
+        chmod +x /tmp/setup-github-certificates.sh
+        /tmp/setup-github-certificates.sh
     else
-        echo "❌ setup-local-certificates.sh not found. Please run it first."
+        echo "❌ setup-local-certificates.sh not found"
         exit 1
+    fi
+else
+    # Check if certificates have been imported for local builds
+    if [ ! -f ".local_build_env" ]; then
+        echo "⚠️ Certificates not imported. Running certificate setup first..."
+        if [ -f "./setup-local-certificates.sh" ]; then
+            chmod +x ./setup-local-certificates.sh
+            ./setup-local-certificates.sh
+        else
+            echo "❌ setup-local-certificates.sh not found. Please run it first."
+            exit 1
+        fi
     fi
 fi
 
@@ -195,13 +260,29 @@ create_fresh_bundle() {
 sign_app() {
     local app_path="$1"
     local app_name="$2"
+    local cert_type="${3:-developer_id}"  # Default to developer_id for backward compatibility
 
     if [ "$SKIP_SIGNING" = "true" ]; then
         echo "   ⏭️ Skipping signing for $app_name"
         return 0
     fi
 
-    echo "   🔐 Preparing to sign $app_name..."
+    # Determine which signing identity to use
+    local signing_identity
+    case "$cert_type" in
+        "app_store")
+            if [ -z "$APP_STORE_SIGNING_IDENTITY" ]; then
+                echo "   ⚠️ App Store certificate not available, skipping App Store signing for $app_name"
+                return 0
+            fi
+            signing_identity="$APP_STORE_SIGNING_IDENTITY"
+            echo "   🔐 Preparing to sign $app_name with App Store certificate..."
+            ;;
+        "developer_id"|*)
+            signing_identity="$DEVELOPER_ID_APP_SIGNING_IDENTITY"
+            echo "   🔐 Preparing to sign $app_name with Developer ID certificate..."
+            ;;
+    esac
 
     # First, remove any existing signature
     echo "   🗑️ Removing any existing signatures..."
@@ -221,9 +302,9 @@ sign_app() {
         echo "   ..."
     fi
 
-    echo "   🔐 Signing $app_name..."
+    echo "   🔐 Signing $app_name with $cert_type certificate..."
     echo "   App path: $app_path"
-    echo "   Signing identity: $APP_SIGNING_IDENTITY"
+    echo "   Signing identity: $signing_identity"
     echo "   Using keychain: $TEMP_KEYCHAIN"
 
     # Unlock keychain before signing
@@ -248,7 +329,7 @@ sign_app() {
         echo "   🔏 Attempting to sign with entitlements..."
         if codesign --force \
             --options runtime \
-            --sign "$APP_SIGNING_IDENTITY" \
+            --sign "$signing_identity" \
             --entitlements "$entitlements_path" \
             --timestamp \
             --keychain "$TEMP_KEYCHAIN" \
@@ -264,7 +345,7 @@ sign_app() {
         echo "   🔏 Attempting to sign without entitlements..."
         if codesign --force \
             --options runtime \
-            --sign "$APP_SIGNING_IDENTITY" \
+            --sign "$signing_identity" \
             --timestamp \
             --keychain "$TEMP_KEYCHAIN" \
             "$app_path" 2>&1; then
@@ -277,7 +358,7 @@ sign_app() {
             echo "   📋 Detailed codesign attempt:"
             codesign --force --verbose=4 \
                 --options runtime \
-                --sign "$APP_SIGNING_IDENTITY" \
+                --sign "$signing_identity" \
                 --keychain "$TEMP_KEYCHAIN" \
                 "$app_path" 2>&1 | head -20
 
@@ -305,13 +386,25 @@ sign_app() {
 sign_pkg() {
     local pkg_path="$1"
     local pkg_name="$2"
+    local cert_type="${3:-developer_id}"  # Default to developer_id for backward compatibility
 
     if [ "$SKIP_SIGNING" = "true" ]; then
         echo "   ⏭️ Skipping package signing for $pkg_name"
         return 0
     fi
 
-    echo "   📦 Signing package $pkg_name..."
+    # Determine which installer signing identity to use
+    local installer_signing_identity
+    case "$cert_type" in
+        "app_store")
+            echo "   ⚠️ App Store packages don't require installer signing, skipping package signing for $pkg_name"
+            return 0
+            ;;
+        "developer_id"|*)
+            installer_signing_identity="$DEVELOPER_ID_INSTALLER_SIGNING_IDENTITY"
+            echo "   📦 Signing package $pkg_name with Developer ID Installer certificate..."
+            ;;
+    esac
 
     # Unlock keychain before signing
     security unlock-keychain -p "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
@@ -319,9 +412,9 @@ sign_pkg() {
     # Create signed package using the imported installer certificate
     local signed_pkg="${pkg_path%.pkg}-signed.pkg"
 
-    echo "   Package signing command: productsign --sign '$INSTALLER_SIGNING_IDENTITY' --keychain '$TEMP_KEYCHAIN' '$pkg_path' '$signed_pkg'"
+    echo "   Package signing command: productsign --sign '$installer_signing_identity' --keychain '$TEMP_KEYCHAIN' '$pkg_path' '$signed_pkg'"
 
-    if productsign --sign "$INSTALLER_SIGNING_IDENTITY" --keychain "$TEMP_KEYCHAIN" "$pkg_path" "$signed_pkg"; then
+    if productsign --sign "$installer_signing_identity" --keychain "$TEMP_KEYCHAIN" "$pkg_path" "$signed_pkg"; then
         mv "$signed_pkg" "$pkg_path"
         echo "   ✅ Successfully signed package $pkg_name"
 
@@ -382,6 +475,103 @@ notarize_pkg() {
     fi
 }
 
+# Function to create dual signed packages (Developer ID and App Store)
+create_dual_signed_packages() {
+    local app_path="$1"
+    local app_name="$2"
+    local base_pkg_name="$3"
+    local version="$4"
+    local identifier="$5"
+
+    echo "📦 Creating dual signed packages for $app_name..."
+
+    # Track success of each package type
+    local dev_id_success=false
+    local app_store_success=false
+
+    # Create Developer ID (indi distribution) package
+    echo "🔐 Creating Developer ID package..."
+
+    # Make a copy of the app for Developer ID signing
+    local dev_id_app_path="${app_path}_dev_id"
+    cp -R "$app_path" "$dev_id_app_path"
+
+    # Sign with Developer ID certificate
+    if ! sign_app "$dev_id_app_path" "$app_name (Developer ID)" "developer_id"; then
+        echo "❌ Failed to sign $app_name with Developer ID certificate"
+        rm -rf "$dev_id_app_path"
+    else
+        # Create Developer ID package
+        local dev_id_pkg="../artifacts/${base_pkg_name}-${version}-indi.pkg"
+        if pkgbuild --identifier "$identifier" --version "$version" \
+                 --install-location "/Applications" --component "$dev_id_app_path" \
+                 "$dev_id_pkg"; then
+            echo "   ✅ Successfully created Developer ID package"
+
+            # Sign the Developer ID package
+            if ! sign_pkg "$dev_id_pkg" "$app_name (Developer ID)" "developer_id"; then
+                echo "❌ Failed to sign Developer ID package"
+                rm -rf "$dev_id_app_path"
+            else
+                # Notarize the Developer ID package
+                if ! notarize_pkg "$dev_id_pkg" "$app_name (Developer ID)"; then
+                    echo "⚠️ Developer ID package notarization failed, but continuing..."
+                fi
+                dev_id_success=true
+            fi
+        else
+            echo "   ❌ Failed to create Developer ID package"
+            rm -rf "$dev_id_app_path"
+        fi
+
+        # Clean up Developer ID app copy
+        rm -rf "$dev_id_app_path"
+    fi
+
+    # Create App Store package if App Store certificate is available (independent of Developer ID success)
+    if [ "$APP_STORE_CERT_AVAILABLE" = "true" ] && [ -n "$APP_STORE_SIGNING_IDENTITY" ]; then
+        echo "🏪 Creating App Store package..."
+
+        # Make a copy of the app for App Store signing
+        local app_store_app_path="${app_path}_app_store"
+        cp -R "$app_path" "$app_store_app_path"
+
+        # Sign with App Store certificate
+        if ! sign_app "$app_store_app_path" "$app_name (App Store)" "app_store"; then
+            echo "❌ Failed to sign $app_name with App Store certificate"
+            rm -rf "$app_store_app_path"
+        else
+            # Create App Store package (note: App Store packages don't need installer signing)
+            local app_store_pkg="../artifacts/${base_pkg_name}-${version}-appstore.pkg"
+            if pkgbuild --identifier "$identifier.appstore" --version "$version" \
+                     --install-location "/Applications" --component "$app_store_app_path" \
+                     "$app_store_pkg"; then
+                echo "   ✅ Successfully created App Store package"
+
+                # App Store packages don't need installer signing or notarization
+                echo "   ℹ️ App Store packages don't require installer signing or notarization"
+                app_store_success=true
+            else
+                echo "   ❌ Failed to create App Store package"
+                rm -rf "$app_store_app_path"
+            fi
+
+            # Clean up App Store app copy
+            rm -rf "$app_store_app_path"
+        fi
+    else
+        echo "⚠️ App Store certificate not available, skipping App Store package creation"
+    fi
+
+    # Return success if at least one package was created successfully
+    if [ "$dev_id_success" = true ] || [ "$app_store_success" = true ]; then
+        return 0
+    else
+        echo "❌ Failed to create any packages for $app_name"
+        return 1
+    fi
+}
+
 # Function to robust cleanup
 robust_cleanup() {
     local dir="$1"
@@ -389,13 +579,30 @@ robust_cleanup() {
 
     # Try multiple cleanup methods
     if [ -d "$dir" ]; then
+        # First, remove extended attributes recursively
+        echo "   Removing extended attributes..."
+        find "$dir" -exec xattr -c {} \; 2>/dev/null || true
+
+        # Check for files owned by root and change ownership
+        echo "   Checking file ownership..."
+        if find "$dir" -user root -print -quit | grep -q .; then
+            echo "   Found root-owned files, changing ownership..."
+            find "$dir" -user root -exec chown "$(whoami)" {} \; 2>/dev/null || true
+        fi
+
+        # Try to change permissions recursively
+        echo "   Setting permissions..."
+        chmod -R u+rwx "$dir" 2>/dev/null || true
+
         # First try normal removal
         rm -rf "$dir" 2>/dev/null || true
 
-        # If directory still exists, try with sudo
+        # If directory still exists, try alternative cleanup methods
         if [ -d "$dir" ]; then
-            echo "   Trying with elevated permissions..."
-            sudo rm -rf "$dir" 2>/dev/null || true
+            echo "   Trying alternative cleanup methods..."
+            # Try to change permissions first
+            chmod -R 755 "$dir" 2>/dev/null || true
+            rm -rf "$dir" 2>/dev/null || true
         fi
 
         # If still exists, try to remove contents first
@@ -405,11 +612,20 @@ robust_cleanup() {
             find "$dir" -type d -empty -delete 2>/dev/null || true
             rm -rf "$dir" 2>/dev/null || true
         fi
+
+        # Final attempt: try to remove each file individually
+        if [ -d "$dir" ]; then
+            echo "   Trying individual file removal..."
+            find "$dir" -type f -exec rm -f {} \; 2>/dev/null || true
+            find "$dir" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+        fi
     fi
 
     # Ensure directory is gone
     if [ -d "$dir" ]; then
         echo "❌ Failed to completely remove $dir. Manual cleanup may be required."
+        echo "   Remaining contents:"
+        ls -la "$dir" 2>/dev/null || true
         return 1
     fi
 
@@ -554,39 +770,9 @@ if [ ! -d "$APP_PATH" ]; then
     exit 1
 fi
 
-# Sign the client app
-if ! sign_app "$APP_PATH" "R2MIDI Client"; then
-    echo "❌ Failed to sign client app"
-    cd ..
-    robust_cleanup "build_client"
-    exit 1
-fi
-
-echo "   Creating client package..."
-CLIENT_PKG="../artifacts/R2MIDI-Client-${VERSION}.pkg"
-
-if pkgbuild --identifier "com.r2midi.client" --version "$VERSION" \
-         --install-location "/Applications" --component "$APP_PATH" \
-         "$CLIENT_PKG"; then
-    echo "   ✅ Successfully created client package"
-else
-    echo "   ❌ Failed to create client package"
-    cd ..
-    robust_cleanup "build_client"
-    exit 1
-fi
-
-# Sign the client package
-if ! sign_pkg "$CLIENT_PKG" "R2MIDI Client"; then
-    echo "❌ Failed to sign client package"
-    cd ..
-    robust_cleanup "build_client"
-    exit 1
-fi
-
-# Notarize the client package
-if ! notarize_pkg "$CLIENT_PKG" "R2MIDI Client"; then
-    echo "⚠️ Client package notarization failed, but continuing..."
+# Create dual signed packages (Developer ID and App Store)
+if ! create_dual_signed_packages "$APP_PATH" "R2MIDI Client" "R2MIDI-Client" "$VERSION" "com.r2midi.client"; then
+    echo "⚠️ Some client packages may have failed, but continuing with build..."
 fi
 
 cd ..
@@ -666,39 +852,9 @@ if [ ! -d "$APP_PATH" ]; then
     exit 1
 fi
 
-# Sign the server app
-if ! sign_app "$APP_PATH" "R2MIDI Server"; then
-    echo "❌ Failed to sign server app"
-    cd ..
-    robust_cleanup "build_server"
-    exit 1
-fi
-
-echo "   Creating server package..."
-SERVER_PKG="../artifacts/R2MIDI-Server-${VERSION}.pkg"
-
-if pkgbuild --identifier "com.r2midi.server" --version "$VERSION" \
-         --install-location "/Applications" --component "$APP_PATH" \
-         "$SERVER_PKG"; then
-    echo "   ✅ Successfully created server package"
-else
-    echo "   ❌ Failed to create server package"
-    cd ..
-    robust_cleanup "build_server"
-    exit 1
-fi
-
-# Sign the server package
-if ! sign_pkg "$SERVER_PKG" "R2MIDI Server"; then
-    echo "❌ Failed to sign server package"
-    cd ..
-    robust_cleanup "build_server"
-    exit 1
-fi
-
-# Notarize the server package
-if ! notarize_pkg "$SERVER_PKG" "R2MIDI Server"; then
-    echo "⚠️ Server package notarization failed, but continuing..."
+# Create dual signed packages (Developer ID and App Store)
+if ! create_dual_signed_packages "$APP_PATH" "R2MIDI Server" "R2MIDI-Server" "$VERSION" "com.r2midi.server"; then
+    echo "⚠️ Some server packages may have failed, but continuing with build..."
 fi
 
 cd ..
@@ -715,24 +871,88 @@ for pkg in artifacts/R2MIDI-*-${VERSION}.pkg; do
     fi
 done
 
-# Verify all packages exist
-if [ ! -f "artifacts/R2MIDI-Client-${VERSION}.pkg" ]; then
-    echo "❌ Client package was not created"
-    exit 1
+# Check which packages were successfully created
+packages_created=0
+missing_packages=""
+
+if [ ! -f "artifacts/R2MIDI-Client-${VERSION}-indi.pkg" ]; then
+    echo "⚠️ Client Developer ID package was not created"
+    missing_packages="$missing_packages R2MIDI-Client-${VERSION}-indi.pkg"
+else
+    packages_created=$((packages_created + 1))
 fi
 
-if [ ! -f "artifacts/R2MIDI-Server-${VERSION}.pkg" ]; then
-    echo "❌ Server package was not created"
+if [ ! -f "artifacts/R2MIDI-Server-${VERSION}-indi.pkg" ]; then
+    echo "⚠️ Server Developer ID package was not created"
+    missing_packages="$missing_packages R2MIDI-Server-${VERSION}-indi.pkg"
+else
+    packages_created=$((packages_created + 1))
+fi
+
+# Check App Store packages if certificates were available
+if [ "$APP_STORE_CERT_AVAILABLE" = "true" ] && [ -n "$APP_STORE_SIGNING_IDENTITY" ]; then
+    if [ -f "artifacts/R2MIDI-Client-${VERSION}-appstore.pkg" ]; then
+        packages_created=$((packages_created + 1))
+    else
+        echo "⚠️ Client App Store package was not created"
+        missing_packages="$missing_packages R2MIDI-Client-${VERSION}-appstore.pkg"
+    fi
+
+    if [ -f "artifacts/R2MIDI-Server-${VERSION}-appstore.pkg" ]; then
+        packages_created=$((packages_created + 1))
+    else
+        echo "⚠️ Server App Store package was not created"
+        missing_packages="$missing_packages R2MIDI-Server-${VERSION}-appstore.pkg"
+    fi
+fi
+
+# Only fail if no packages were created at all
+if [ $packages_created -eq 0 ]; then
+    echo "❌ No packages were created successfully"
     exit 1
 fi
 
 echo "
 🎉 Build completed successfully!"
 echo "📦 Ready for distribution:"
-echo "   • R2MIDI-Client-${VERSION}.pkg"
-echo "   • R2MIDI-Server-${VERSION}.pkg"
-echo "
-Both packages are signed and notarized (if enabled) and ready for distribution."
+
+# List Developer ID packages that were actually created
+dev_id_packages_exist=false
+if [ -f "artifacts/R2MIDI-Client-${VERSION}-indi.pkg" ] || [ -f "artifacts/R2MIDI-Server-${VERSION}-indi.pkg" ]; then
+    echo "   Developer ID (indi distribution):"
+    dev_id_packages_exist=true
+    if [ -f "artifacts/R2MIDI-Client-${VERSION}-indi.pkg" ]; then
+        echo "   • R2MIDI-Client-${VERSION}-indi.pkg"
+    fi
+    if [ -f "artifacts/R2MIDI-Server-${VERSION}-indi.pkg" ]; then
+        echo "   • R2MIDI-Server-${VERSION}-indi.pkg"
+    fi
+fi
+
+# List App Store packages that were actually created
+app_store_packages_exist=false
+if [ "$APP_STORE_CERT_AVAILABLE" = "true" ] && [ -n "$APP_STORE_SIGNING_IDENTITY" ]; then
+    if [ -f "artifacts/R2MIDI-Client-${VERSION}-appstore.pkg" ] || [ -f "artifacts/R2MIDI-Server-${VERSION}-appstore.pkg" ]; then
+        echo "   App Store:"
+        app_store_packages_exist=true
+        if [ -f "artifacts/R2MIDI-Client-${VERSION}-appstore.pkg" ]; then
+            echo "   • R2MIDI-Client-${VERSION}-appstore.pkg"
+        fi
+        if [ -f "artifacts/R2MIDI-Server-${VERSION}-appstore.pkg" ]; then
+            echo "   • R2MIDI-Server-${VERSION}-appstore.pkg"
+        fi
+    fi
+fi
+
+# Show summary message
+if [ -n "$missing_packages" ]; then
+    echo "
+⚠️ Some packages could not be created, but the build completed with $packages_created package(s)."
+    echo "Missing packages:$missing_packages"
+else
+    echo "
+All packages are signed and notarized (if enabled) and ready for distribution."
+fi
 echo ""
 echo "🧹 To clean up certificates later, run:"
 echo "   security delete-keychain \"$TEMP_KEYCHAIN\""
