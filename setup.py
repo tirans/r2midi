@@ -19,7 +19,6 @@ setup(
         "uvicorn>=0.23.2",
         "pydantic>=2.4.2",
         "python-rtmidi>=1.5.5",
-        "mido>=1.3.0",
         "pyqt6>=6.5.2",
         "httpx>=0.25.0",
         "python-dotenv>=1.0.0",

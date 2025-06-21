@@ -42,29 +42,54 @@ build_app() {
     local app_name="$1"
     local platform="$2"
     local signing_mode="$3"
-    
+
     echo "📦 Building $app_name for $platform..."
-    
+
+    # Determine the project directory and app name for briefcase
+    local project_dir=""
+    local briefcase_app_name=""
+
+    case "$app_name" in
+        server)
+            project_dir="server"
+            briefcase_app_name="server"
+            ;;
+        r2midi-client)
+            project_dir="r2midi_client"
+            briefcase_app_name="r2midi-client"
+            ;;
+        *)
+            echo "❌ Unknown app name: $app_name"
+            exit 1
+            ;;
+    esac
+
+    # Save current directory
+    local original_dir=$(pwd)
+
+    # Change to the project directory
+    cd "$project_dir"
+
     # Clean previous builds if they exist
-    if [ -d "build/$app_name" ]; then
+    if [ -d "build" ]; then
         echo "🧹 Cleaning previous build for $app_name..."
-        rm -rf "build/$app_name"
+        rm -rf "build"
     fi
-    
+
     # Platform-specific build commands
     case "$platform" in
         linux)
             echo "🐧 Building Linux application..."
-            briefcase build linux system -a "$app_name"
+            briefcase build linux system -a "$briefcase_app_name"
             if [ $? -eq 0 ]; then
-                briefcase package linux system -a "$app_name"
+                briefcase package linux system -a "$briefcase_app_name"
             fi
             ;;
         windows)
             echo "🪟 Building Windows application..."
-            briefcase build windows app -a "$app_name"
+            briefcase build windows app -a "$briefcase_app_name"
             if [ $? -eq 0 ]; then
-                briefcase package windows app -a "$app_name"
+                briefcase package windows app -a "$briefcase_app_name"
             fi
             ;;
         macos)
@@ -72,21 +97,26 @@ build_app() {
             if [ "$signing_mode" = "signed" ]; then
                 # For signed builds, we'll handle signing separately
                 # First build without signing
-                briefcase build macos app -a "$app_name"
+                briefcase build macos app -a "$briefcase_app_name"
                 if [ $? -eq 0 ]; then
                     echo "✅ Built $app_name successfully (signing will be handled separately)"
                 fi
             else
                 # Unsigned build
-                briefcase build macos app -a "$app_name"
+                briefcase build macos app -a "$briefcase_app_name"
                 if [ $? -eq 0 ]; then
-                    briefcase package macos app -a "$app_name"
+                    briefcase package macos app -a "$briefcase_app_name"
                 fi
             fi
             ;;
     esac
-    
-    if [ $? -eq 0 ]; then
+
+    local build_result=$?
+
+    # Return to original directory
+    cd "$original_dir"
+
+    if [ $build_result -eq 0 ]; then
         echo "✅ Successfully built $app_name"
     else
         echo "❌ Failed to build $app_name"
@@ -107,27 +137,34 @@ mkdir -p artifacts
 
 case "$PLATFORM" in
     linux)
-        # Copy Linux artifacts
-        find dist/ -name "*.deb" -exec cp {} artifacts/ \; 2>/dev/null || true
-        find dist/ -name "*.tar.gz" -exec cp {} artifacts/ \; 2>/dev/null || true
-        find dist/ -name "*.AppImage" -exec cp {} artifacts/ \; 2>/dev/null || true
+        # Copy Linux artifacts from both server and client directories
+        find server/dist/ -name "*.deb" -exec cp {} artifacts/ \; 2>/dev/null || true
+        find server/dist/ -name "*.tar.gz" -exec cp {} artifacts/ \; 2>/dev/null || true
+        find server/dist/ -name "*.AppImage" -exec cp {} artifacts/ \; 2>/dev/null || true
+        find r2midi_client/dist/ -name "*.deb" -exec cp {} artifacts/ \; 2>/dev/null || true
+        find r2midi_client/dist/ -name "*.tar.gz" -exec cp {} artifacts/ \; 2>/dev/null || true
+        find r2midi_client/dist/ -name "*.AppImage" -exec cp {} artifacts/ \; 2>/dev/null || true
         ;;
     windows)
-        # Copy Windows artifacts
-        find dist/ -name "*.msi" -exec cp {} artifacts/ \; 2>/dev/null || true
-        find dist/ -name "*.zip" -exec cp {} artifacts/ \; 2>/dev/null || true
+        # Copy Windows artifacts from both server and client directories
+        find server/dist/ -name "*.msi" -exec cp {} artifacts/ \; 2>/dev/null || true
+        find server/dist/ -name "*.zip" -exec cp {} artifacts/ \; 2>/dev/null || true
+        find r2midi_client/dist/ -name "*.msi" -exec cp {} artifacts/ \; 2>/dev/null || true
+        find r2midi_client/dist/ -name "*.zip" -exec cp {} artifacts/ \; 2>/dev/null || true
         ;;
     macos)
         # Copy macOS artifacts (apps for further processing)
-        if [ -d "dist/server" ]; then
-            cp -r "dist/server" artifacts/ 2>/dev/null || true
+        if [ -d "server/dist" ]; then
+            cp -r server/dist/* artifacts/ 2>/dev/null || true
         fi
-        if [ -d "dist/r2midi-client" ]; then
-            cp -r "dist/r2midi-client" artifacts/ 2>/dev/null || true
+        if [ -d "r2midi_client/dist" ]; then
+            cp -r r2midi_client/dist/* artifacts/ 2>/dev/null || true
         fi
         # Copy any packages that were created
-        find dist/ -name "*.dmg" -exec cp {} artifacts/ \; 2>/dev/null || true
-        find dist/ -name "*.pkg" -exec cp {} artifacts/ \; 2>/dev/null || true
+        find server/dist/ -name "*.dmg" -exec cp {} artifacts/ \; 2>/dev/null || true
+        find server/dist/ -name "*.pkg" -exec cp {} artifacts/ \; 2>/dev/null || true
+        find r2midi_client/dist/ -name "*.dmg" -exec cp {} artifacts/ \; 2>/dev/null || true
+        find r2midi_client/dist/ -name "*.pkg" -exec cp {} artifacts/ \; 2>/dev/null || true
         ;;
 esac
 

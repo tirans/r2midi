@@ -1,0 +1,5 @@
+export TEMP_KEYCHAIN="r2midi-local-1750509626.keychain"
+export TEMP_KEYCHAIN_PASSWORD="temp_password_1750509626_7fdb29b3101924cd"
+export APP_SIGNING_IDENTITY="Developer ID Application: Tiran Efrat (79449BGAM5)"
+export INSTALLER_SIGNING_IDENTITY="Developer ID Installer: Tiran Efrat (79449BGAM5)"
+export CERTIFICATES_IMPORTED="true"

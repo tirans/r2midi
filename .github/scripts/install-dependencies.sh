@@ -118,7 +118,7 @@ if verify_package "PyQt6"; then true; else VERIFICATION_OK=false; fi
 
 # Check MIDI dependencies
 echo "📋 Checking MIDI dependencies..."
-if verify_package "rtmidi"; then true; else VERIFICATION_OK=false; fi
+if verify_package "python-rtmidi"; then true; else VERIFICATION_OK=false; fi
 
 # Check common dependencies
 echo "📋 Checking common dependencies..."

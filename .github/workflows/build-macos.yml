@@ -1,84 +1,24 @@
-name: Build macOS (Native Tools - Clean Architecture)
+name: Build macOS (Enhanced Virtual Environments)
 
 on:
   push:
     branches: [ main, develop ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.github/workflows/*.md'
   pull_request:
     branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.github/workflows/*.md'
-  workflow_call:
-    inputs:
-      version:
-        required: true
-        type: string
-        description: 'Application version'
-      build-type:
-        required: false
-        type: string
-        default: 'production'
-        description: 'Build type (dev, staging, production)'
-      runner-type:
-        required: false
-        type: string
-        default: 'self-hosted'
-        description: 'Runner type (self-hosted, macos-13, macos-14, macos-latest)'
-    outputs:
-      artifact-name:
-        description: "Name of the uploaded artifact"
-        value: ${{ jobs.build-macos-native.outputs.artifact-name }}
-    secrets:
-      APPLE_DEVELOPER_ID_APPLICATION_CERT:
-        required: true
-      APPLE_DEVELOPER_ID_INSTALLER_CERT:
-        required: true
-      APPLE_CERT_PASSWORD:
-        required: true
-      APPLE_ID:
-        required: true
-      APPLE_ID_PASSWORD:
-        required: true
-      APPLE_TEAM_ID:
-        required: true
   workflow_dispatch:
     inputs:
       build-type:
         description: 'Build type'
         required: false
         type: choice
-        options:
-          - dev
-          - staging
-          - production
+        options: [dev, staging, production]
         default: 'production'
-      runner-type:
-        description: 'Runner type'
-        required: false
-        type: choice
-        options:
-          - self-hosted
-          - macos-13
-          - macos-14
-          - macos-latest
-        default: 'self-hosted'
-
-env:
-  # Default build type for push/PR triggers
-  DEFAULT_BUILD_TYPE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'production' || 'production' }}
 
 jobs:
-  build-macos-native:
-    name: 🍎 Native macOS Build (${{ inputs.runner-type || 'self-hosted' == 'self-hosted' && 'M3 Max Self-Hosted' || inputs.runner-type || 'self-hosted' }})
-    runs-on: ${{ inputs.runner-type || 'self-hosted' }}
-    timeout-minutes: ${{ (inputs.runner-type || 'self-hosted') == 'self-hosted' && 45 || 80 }}
-    outputs:
-      artifact-name: ${{ steps.upload.outputs.artifact-name }}
+  build-macos-enhanced:
+    name: 🍎 Enhanced macOS Build
+    runs-on: self-hosted
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -86,215 +26,25 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Make scripts executable
+      - name: Clean environment
         shell: bash
-        run: |
-          echo "🔧 Making all scripts executable..."
-          find .github/scripts -name "*.sh" -type f -exec chmod +x {} \;
-          echo "✅ Scripts are now executable"
+        run: ./clean-environment.sh --keep-cache
 
-      - name: Configure build parameters
-        id: config
+      - name: Setup virtual environments
         shell: bash
-        run: |
-          ./.github/scripts/configure-build.sh \
-            "${{ github.event_name }}" \
-            "${{ inputs.version }}" \
-            "${{ inputs.build-type }}" \
-            "${{ inputs.runner-type || 'self-hosted' }}" \
-            "${{ env.DEFAULT_BUILD_TYPE }}"
+        run: ./setup-virtual-environments.sh --use-uv
 
-      - name: Setup Python and macOS environment
+      - name: Test environments
         shell: bash
-        run: |
-          ./.github/scripts/setup-python-environment.sh "${{ steps.config.outputs.runner-type }}"
+        run: ./test_environments.sh
 
-      - name: Install Python dependencies
+      - name: Build applications
         shell: bash
-        run: |
-          ./.github/scripts/install-dependencies.sh
-
-      - name: Setup Apple Developer certificates
-        shell: bash
-        env:
-          APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
-          APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
-          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          ./.github/scripts/setup-apple-certificates.sh
-
-      - name: Build Server App with py2app
-        shell: bash
-        run: |
-          # Check if Qt packages are present that might cause conflicts
-          echo "🔍 Checking for Qt package conflicts..."
-          QT_PACKAGES=$(python3 -c "
-          try:
-              import pkg_resources
-              qt_count = 0
-              for pkg in pkg_resources.working_set:
-                  if any(qt_name in pkg.project_name.lower() for qt_name in ['qt', 'pyqt', 'pyside']):
-                      qt_count += 1
-              print(qt_count)
-          except:
-              print('0')
-          ")
-          
-          if [ "$QT_PACKAGES" -gt 0 ]; then
-            echo "⚠️ Found $QT_PACKAGES Qt packages - using isolated build approach"
-            ./.github/scripts/build-server-app-isolated.sh "${{ steps.config.outputs.version }}"
-          else
-            echo "✅ No Qt packages detected - using standard build approach"
-            ./.github/scripts/build-server-app.sh "${{ steps.config.outputs.version }}"
-          fi
-
-      - name: Build Client App with py2app
-        shell: bash
-        run: |
-          ./.github/scripts/build-client-app.sh "${{ steps.config.outputs.version }}"
-
-      - name: Sign applications with codesign
-        shell: bash
-        run: |
-          ./.github/scripts/sign-apps.sh
-
-      - name: Create signed PKG installers
-        shell: bash
-        run: |
-          ./.github/scripts/create-pkg-installers.sh "${{ steps.config.outputs.version }}"
-
-      - name: Create signed DMG installers
-        shell: bash
-        run: |
-          ./.github/scripts/create-dmg-installers.sh "${{ steps.config.outputs.version }}"
-
-      - name: Notarize packages with Apple notarytool
-        shell: bash
-        run: |
-          ./.github/scripts/notarize-packages.sh
-
-      - name: Create build report and documentation
-        shell: bash
-        run: |
-          ./.github/scripts/create-build-report.sh \
-            "${{ steps.config.outputs.version }}" \
-            "${{ steps.config.outputs.build-type }}" \
-            "${{ steps.config.outputs.runner-type }}"
+        run: ./build-all-local.sh --dev --no-sign --version "1.0.0-ci"
 
       - name: Upload artifacts
-        id: upload
         uses: actions/upload-artifact@v4
         with:
-          name: macos-native-${{ steps.config.outputs.build-type }}-${{ github.run_number }}-${{ github.sha }}
+          name: macos-enhanced-${{ github.run_number }}
           path: artifacts/
-          retention-days: ${{ steps.config.outputs.build-type == 'production' && 90 || 30 }}
-          compression-level: 6
-
-      - name: Cleanup sensitive data and temporary files
-        if: always()
-        shell: bash
-        run: |
-          ./.github/scripts/cleanup-build.sh \
-            "${{ steps.config.outputs.build-type }}" \
-            "${{ env.IS_M3_MAX }}"
-
-      - name: Build Summary
-        shell: bash
-        run: |
-          echo "🎉 NATIVE MACOS BUILD COMPLETED SUCCESSFULLY!"
-          echo "=============================================="
-          echo "🚫 IMPORTANT: This build completely bypassed Briefcase!"
-          echo "=============================================="
-          echo ""
-          echo "📋 BUILD DETAILS:"
-          echo "  Version: ${{ steps.config.outputs.version }}"
-          echo "  Build Type: ${{ steps.config.outputs.build-type }}"
-          echo "  Trigger: ${{ github.event_name }}"
-          echo "  Branch: ${{ github.ref_name }}"
-          echo ""
-          echo "🖥️ RUNNER INFORMATION:"
-          echo "  Type: ${{ env.RUNNER_TYPE }}"
-          echo "  Architecture: $(uname -m)"
-          echo "  macOS: $(sw_vers -productVersion)"
-          if [ "${{ env.IS_M3_MAX }}" = "true" ]; then
-            echo "  🚀 M3 Max optimizations: ENABLED"
-            echo "  CPU cores used: ${{ env.CPU_CORES }}"
-          fi
-          echo ""
-          echo "🔨 BUILD METHOD: Native macOS Tools (NOT Briefcase)"
-          echo "  ✅ py2app: Application building (bypassed briefcase build)"
-          echo "  ✅ codesign: Code signing with runtime hardening (bypassed briefcase signing)"
-          echo "  ✅ pkgbuild: PKG installer creation (bypassed briefcase package)"
-          echo "  ✅ notarytool: Apple notarization service (bypassed briefcase notarize)"
-          echo "  ✅ hdiutil: DMG disk image creation (bypassed briefcase dmg)"
-          echo ""
-          echo "🔐 CODE SIGNING (from GitHub Secrets):"
-          echo "  ✅ Application signing: ${{ env.APP_SIGNING_IDENTITY }}"
-          echo "  ✅ Installer signing: ${{ env.INSTALLER_SIGNING_IDENTITY }}"
-          echo "  ✅ Team ID: ${{ env.APPLE_TEAM_ID }}"
-          echo "  ✅ Hardened runtime: Enabled"
-          echo "  ✅ Entitlements: Network, file access, audio input"
-          echo ""
-          echo "📤 NOTARIZATION STATUS:"
-          echo "  ✅ Notarized packages: ${{ env.NOTARIZED_COUNT }}/${{ env.TOTAL_PACKAGES }}"
-          if [ "${{ env.NOTARIZED_COUNT }}" -eq "${{ env.TOTAL_PACKAGES }}" ]; then
-            echo "  🎉 ALL PACKAGES SUCCESSFULLY NOTARIZED!"
-          elif [ "${{ env.NOTARIZED_COUNT }}" -gt 0 ]; then
-            echo "  ⚠️ PARTIAL SUCCESS - Some packages notarized"
-          else
-            echo "  ❌ NO PACKAGES NOTARIZED - Check credentials"
-          fi
-          echo ""
-          echo "📦 CREATED PACKAGES:"
-          total_size=0
-          for file in artifacts/*; do
-              if [ -f "$file" ] && [[ "$file" != *"BUILD_REPORT.md" ]]; then
-                  size_display=$(du -h "$file" | cut -f1 2>/dev/null || echo "unknown")
-                  
-                  # Check notarization status for display
-                  if xcrun stapler validate "$file" >/dev/null 2>&1; then
-                      status="📦✅"
-                  elif codesign --verify "$file" >/dev/null 2>&1; then
-                      status="📦🔐"
-                  else
-                      status="📦⚠️"
-                  fi
-                  
-                  echo "  $status $(basename "$file") ($size_display)"
-              fi
-          done
-          echo ""
-          if [ "${{ env.IS_M3_MAX }}" = "true" ]; then
-            echo "⚡ M3 MAX PERFORMANCE BENEFITS:"
-            echo "  ✅ ~3x faster than GitHub-hosted runners"
-            echo "  ✅ Zero queue wait time"
-            echo "  ✅ Persistent dependency caching"
-            echo "  ✅ Native Apple Silicon performance"
-            echo "  ✅ All CPU cores utilized for compilation"
-            echo ""
-          fi
-          echo "🚀 DISTRIBUTION STATUS:"
-          echo "  ✅ Packages signed with Apple Developer ID"
-          if [ "${{ env.NOTARIZED_COUNT }}" -eq "${{ env.TOTAL_PACKAGES }}" ]; then
-            echo "  ✅ All packages notarized by Apple"
-            echo "  ✅ No security warnings for end users"
-            echo "  ✅ Ready for immediate distribution"
-          else
-            echo "  ⚠️ Some packages not notarized - may show warnings"
-            echo "  📋 Check notarization logs for details"
-          fi
-          echo ""
-          echo "🔄 COMPARED TO BRIEFCASE:"
-          echo "  ❌ Briefcase: Exit code 200, signing failures"
-          echo "  ✅ Native tools: Successful build and packaging"
-          echo "  ❌ Briefcase: Complex mixed approach with conflicts"
-          echo "  ✅ Native tools: Direct Apple toolchain usage"
-          echo "  ❌ Briefcase: Opaque error messages"
-          echo "  ✅ Native tools: Clear error reporting"
-          echo ""
-          echo "✅ BUILD COMPLETED - Ready for distribution!"
-          echo "🚫 No more Briefcase exit code 200 failures!"
-          echo "🎯 All code now organized in clean, reusable scripts!"
+          retention-days: 30
