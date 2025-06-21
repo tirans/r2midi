@@ -13,11 +13,40 @@ on:
         type: choice
         options: [dev, staging, production]
         default: 'production'
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version to build'
+        required: true
+        type: string
+      build-type:
+        description: 'Build type'
+        required: false
+        type: string
+        default: 'production'
+      runner-type:
+        description: 'Runner type to use'
+        required: false
+        type: string
+        default: 'self-hosted'
+    secrets:
+      APPLE_DEVELOPER_ID_APPLICATION_CERT:
+        required: true
+      APPLE_DEVELOPER_ID_INSTALLER_CERT:
+        required: true
+      APPLE_CERT_PASSWORD:
+        required: true
+      APPLE_ID:
+        required: true
+      APPLE_ID_PASSWORD:
+        required: true
+      APPLE_TEAM_ID:
+        required: true
 
 jobs:
   build-macos-enhanced:
     name: 🍎 Enhanced macOS Build
-    runs-on: self-hosted
+    runs-on: ${{ inputs.runner-type || 'self-hosted' }}
     timeout-minutes: 45
 
     steps:
@@ -40,7 +69,24 @@ jobs:
 
       - name: Build applications
         shell: bash
-        run: ./build-all-local.sh --dev --no-sign --version "1.0.0-ci"
+        env:
+          APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
+          APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          VERSION="${{ inputs.version || '1.0.0-ci' }}"
+          BUILD_TYPE="${{ inputs.build-type || 'production' }}"
+
+          if [ "$BUILD_TYPE" = "dev" ]; then
+            ./build-all-local.sh --dev --no-sign --version "$VERSION"
+          elif [ "$BUILD_TYPE" = "staging" ]; then
+            ./build-all-local.sh --staging --version "$VERSION"
+          else
+            ./build-all-local.sh --version "$VERSION"
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
