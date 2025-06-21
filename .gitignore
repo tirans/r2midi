@@ -14,7 +14,7 @@ r2midi.iconset/
 build_native/
 runner/
 *.pyc
-/server/midi-presets
+server/midi-presets/
 .venv312/
 **/.DS_Store
 # User-specific stuff
