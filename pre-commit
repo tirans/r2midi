@@ -1,9 +1,0 @@
-#!/bin/bash
-
-echo "NOTICE: This pre-commit hook is deprecated."
-echo "Version incrementing is now handled automatically by GitHub Actions."
-echo "See .github/workflows/python-package.yml for details."
-echo "You can safely remove this hook from your local repository."
-
-# Exit with success code
-exit 0
