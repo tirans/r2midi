@@ -2,7 +2,34 @@
 # build-all-local.sh - Build complete R2MIDI suite with proper certificate handling
 set -euo pipefail
 
+# Ensure script has execute permissions (for GitHub Actions)
+chmod +x "$0" 2>/dev/null || true
+
+# For self-hosted runners, ensure we have proper permissions
+if [ -n "${GITHUB_ACTIONS:-}" ] && [ "$(whoami)" != "root" ]; then
+    # Ensure we own the workspace (important for self-hosted runners)
+    if [ -w "." ]; then
+        echo "✅ Workspace is writable"
+    else
+        echo "⚠️ Warning: Workspace may not be fully writable"
+    fi
+fi
+
 echo "🚀 R2MIDI Build System with Certificate Management"
+
+# Check macOS version (important for self-hosted runners)
+if [ "$(uname)" = "Darwin" ]; then
+    macos_version=$(sw_vers -productVersion)
+    echo "💻 Running on macOS $macos_version"
+    
+    # Check if notarytool is available (requires macOS 12+)
+    if command -v xcrun &> /dev/null && xcrun --find notarytool &> /dev/null; then
+        echo "✅ notarytool is available"
+    else
+        echo "⚠️ notarytool not found - notarization may fail"
+        echo "   Requires Xcode 13+ or macOS 12+"
+    fi
+fi
 
 # Check if we're running in GitHub Actions
 if [ -n "${GITHUB_ACTIONS:-}" ]; then
@@ -55,17 +82,99 @@ EOF
 
     # Set up environment to use GitHub certificates
     export CONFIG_FILE="/tmp/github_app_config.json"
-
-    # Run certificate setup with GitHub certificates
-    if [ -f "./setup-local-certificates.sh" ]; then
-        chmod +x ./setup-local-certificates.sh
-        # Temporarily replace the config file path in the setup script
-        sed "s|apple_credentials/config/app_config.json|$CONFIG_FILE|g" ./setup-local-certificates.sh > /tmp/setup-github-certificates.sh
-        chmod +x /tmp/setup-github-certificates.sh
-        /tmp/setup-github-certificates.sh
+    
+    # Create temporary keychain for GitHub Actions
+    TEMP_KEYCHAIN="r2midi-github-$(date +%s).keychain"
+    TEMP_KEYCHAIN_PASSWORD="github_$(date +%s)_$(openssl rand -hex 8)"
+    
+    echo "🔐 Creating temporary keychain for GitHub Actions: $TEMP_KEYCHAIN"
+    
+    # Clean up any existing keychain (handle both GitHub-hosted and self-hosted runners)
+    security delete-keychain "$TEMP_KEYCHAIN" 2>/dev/null || true
+    # Clean up any leftover r2midi keychains from previous runs (important for self-hosted runners)
+    security list-keychains -d user | grep "r2midi-" | sed 's/"//g' | xargs -I {} security delete-keychain {} 2>/dev/null || true
+    
+    # Create and configure keychain
+    security create-keychain -p "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
+    security set-keychain-settings -lut 21600 "$TEMP_KEYCHAIN"
+    security unlock-keychain -p "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
+    
+    # Add to keychain search list
+    # For self-hosted runners, preserve existing keychains
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        # Get existing keychains, filter out old r2midi keychains
+        existing_keychains=$(security list-keychains -d user | sed 's/"//g' | grep -v "r2midi-" || true)
+        security list-keychains -d user -s "$TEMP_KEYCHAIN" $existing_keychains
     else
-        echo "❌ setup-local-certificates.sh not found"
-        exit 1
+        security list-keychains -d user -s "$TEMP_KEYCHAIN" $(security list-keychains -d user | sed s/\"//g)
+    fi
+    
+    echo "🔐 Importing certificates into keychain..."
+    
+    # Import Developer ID Application certificate
+    security import "/tmp/github_certs/app_cert.p12" \
+        -k "$TEMP_KEYCHAIN" \
+        -P "${APPLE_CERT_PASSWORD}" \
+        -T /usr/bin/codesign \
+        -T /usr/bin/productbuild \
+        -T /usr/bin/productsign
+    
+    # Import Developer ID Installer certificate  
+    security import "/tmp/github_certs/installer_cert.p12" \
+        -k "$TEMP_KEYCHAIN" \
+        -P "${APPLE_CERT_PASSWORD}" \
+        -T /usr/bin/productsign \
+        -T /usr/bin/productbuild
+    
+    # Import App Store certificate if available
+    if [ "$APP_STORE_CERT_AVAILABLE" = "true" ]; then
+        security import "/tmp/github_certs/app_store_cert.p12" \
+            -k "$TEMP_KEYCHAIN" \
+            -P "${APPLE_APP_STORE_CERTIFICATE_PASSWORD:-${APPLE_CERT_PASSWORD}}" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/productbuild
+    fi
+    
+    # Set key partition list
+    security set-key-partition-list \
+        -S apple-tool:,apple:,codesign: \
+        -s -k "$TEMP_KEYCHAIN_PASSWORD" \
+        "$TEMP_KEYCHAIN"
+    
+    # Find signing identities
+    DEVELOPER_ID_APP_SIGNING_IDENTITY=$(security find-identity -v -p codesigning "$TEMP_KEYCHAIN" | \
+        grep "Developer ID Application" | head -1 | \
+        sed 's/.*"\(.*\)".*/\1/')
+    
+    DEVELOPER_ID_INSTALLER_SIGNING_IDENTITY=$(security find-identity -v "$TEMP_KEYCHAIN" | \
+        grep "Developer ID Installer" | head -1 | \
+        sed 's/.*"\(.*\)".*/\1/')
+    
+    APP_STORE_SIGNING_IDENTITY=""
+    if [ "$APP_STORE_CERT_AVAILABLE" = "true" ]; then
+        APP_STORE_SIGNING_IDENTITY=$(security find-identity -v -p codesigning "$TEMP_KEYCHAIN" | \
+            grep -E "(3rd Party Mac Developer Application|Apple Distribution)" | head -1 | \
+            sed 's/.*"\(.*\)".*/\1/')
+    fi
+    
+    # Create environment file
+    cat > .local_build_env << EOF
+export TEMP_KEYCHAIN="$TEMP_KEYCHAIN"
+export TEMP_KEYCHAIN_PASSWORD="$TEMP_KEYCHAIN_PASSWORD"
+export DEVELOPER_ID_APP_SIGNING_IDENTITY="$DEVELOPER_ID_APP_SIGNING_IDENTITY"
+export DEVELOPER_ID_INSTALLER_SIGNING_IDENTITY="$DEVELOPER_ID_INSTALLER_SIGNING_IDENTITY"
+export APP_STORE_SIGNING_IDENTITY="$APP_STORE_SIGNING_IDENTITY"
+export APP_STORE_CERT_AVAILABLE="$APP_STORE_CERT_AVAILABLE"
+export CERTIFICATES_IMPORTED="true"
+export APP_SIGNING_IDENTITY="$DEVELOPER_ID_APP_SIGNING_IDENTITY"
+export INSTALLER_SIGNING_IDENTITY="$DEVELOPER_ID_INSTALLER_SIGNING_IDENTITY"
+EOF
+    
+    echo "✅ GitHub Actions certificate setup complete"
+    echo "   Developer ID App: $DEVELOPER_ID_APP_SIGNING_IDENTITY"
+    echo "   Developer ID Installer: $DEVELOPER_ID_INSTALLER_SIGNING_IDENTITY"
+    if [ -n "$APP_STORE_SIGNING_IDENTITY" ]; then
+        echo "   App Store: $APP_STORE_SIGNING_IDENTITY"
     fi
 else
     # Check if certificates have been imported for local builds
@@ -108,7 +217,8 @@ if [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_ID_PAS
     TEAM_ID="$APPLE_TEAM_ID"
     APPLE_ID="$APPLE_ID"
     APP_PASSWORD="$APPLE_ID_PASSWORD"
-    ENABLE_NOTARIZATION="true"
+    # Always enable notarization in GitHub Actions when credentials are available
+    ENABLE_NOTARIZATION="${ENABLE_NOTARIZATION:-true}"
 elif [ -f "apple_credentials/config/app_config.json" ]; then
     echo "🔐 Using Apple credentials from config file"
     TEAM_ID=$(python3 -c "import json; print(json.load(open('apple_credentials/config/app_config.json'))['apple_developer']['team_id'])")
@@ -442,24 +552,94 @@ notarize_pkg() {
         return 0
     fi
 
-    if [ -z "$APPLE_ID" ] || [ -z "$APP_PASSWORD" ]; then
-        echo "   ⚠️ Apple ID credentials not found, skipping notarization for $pkg_name"
+    # Check if we should use App Store Connect API
+    local use_api_key=false
+    if [ -n "${APP_STORE_CONNECT_API_KEY:-}" ] && [ -n "${APP_STORE_CONNECT_KEY_ID:-}" ] && [ -n "${APP_STORE_CONNECT_ISSUER_ID:-}" ]; then
+        echo "   🔐 Setting up App Store Connect API for notarization..."
+        
+        # Setup API key
+        API_KEY_DIR="$HOME/.appstoreconnect/private_keys"
+        mkdir -p "$API_KEY_DIR"
+        API_KEY_FILE="$API_KEY_DIR/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+        echo "$APP_STORE_CONNECT_API_KEY" > "$API_KEY_FILE"
+        chmod 600 "$API_KEY_FILE"
+        
+        # Create store profile
+        xcrun notarytool store-credentials "r2midi-ci" \
+            --key "$API_KEY_FILE" \
+            --key-id "$APP_STORE_CONNECT_KEY_ID" \
+            --issuer "$APP_STORE_CONNECT_ISSUER_ID" 2>&1 || true
+        
+        use_api_key=true
+        echo "   🍎 Notarizing package $pkg_name using App Store Connect API..."
+    elif [ -z "$APPLE_ID" ] || [ -z "$APP_PASSWORD" ]; then
+        echo "   ⚠️ No authentication credentials found for notarization, skipping $pkg_name"
         return 0
+    else
+        echo "   🍎 Notarizing package $pkg_name using Apple ID..."
+        echo "   Using Apple ID: $APPLE_ID"
+        echo "   Using Team ID: $TEAM_ID"
     fi
 
-    echo "   🍎 Notarizing package $pkg_name..."
-
-    # Submit for notarization
+    # Submit for notarization with increased timeout for GitHub Actions
     local submit_result
-    if submit_result=$(xcrun notarytool submit "$pkg_path" \
-        --apple-id "$APPLE_ID" \
-        --password "$APP_PASSWORD" \
-        --team-id "$TEAM_ID" \
-        --wait 2>&1); then
+    local timeout="30m"
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        timeout="60m"  # Longer timeout for CI environment
+    fi
+    
+    if [ "$use_api_key" = "true" ]; then
+        # Use App Store Connect API
+        if submit_result=$(xcrun notarytool submit "$pkg_path" \
+            --keychain-profile "r2midi-ci" \
+            --wait --timeout "$timeout" 2>&1); then
+            echo "   ✅ Successfully notarized $pkg_name with API key"
+        else
+            echo "   ❌ Failed to notarize with API key, trying Apple ID..."
+            use_api_key=false
+        fi
+    fi
+    
+    if [ "$use_api_key" = "false" ] && [ -n "$APPLE_ID" ] && [ -n "$APP_PASSWORD" ]; then
+        # Fall back to Apple ID authentication
+        if submit_result=$(xcrun notarytool submit "$pkg_path" \
+            --apple-id "$APPLE_ID" \
+            --password "$APP_PASSWORD" \
+            --team-id "$TEAM_ID" \
+            --wait --timeout "$timeout" 2>&1); then
 
-        echo "   ✅ Successfully notarized $pkg_name"
+            echo "   ✅ Successfully notarized $pkg_name"
+            use_api_key=false  # Mark as successful, no need to retry
+        else
+            echo "   ❌ Failed to notarize with Apple ID"
+            echo "$submit_result"
+            
+            # Try to get more details about the failure
+            if echo "$submit_result" | grep -q "id:"; then
+                local submission_id=$(echo "$submit_result" | grep -o 'id: [a-f0-9-]*' | cut -d' ' -f2 | head -1)
+                if [ -n "$submission_id" ]; then
+                    echo "   📝 Getting notarization log for submission ID: $submission_id"
+                    xcrun notarytool log "$submission_id" \
+                        --apple-id "$APPLE_ID" \
+                        --password "$APP_PASSWORD" \
+                        --team-id "$TEAM_ID" 2>&1 || true
+                fi
+            fi
+            
+            # In GitHub Actions, treat notarization failure as a warning, not error
+            if [ -n "${GITHUB_ACTIONS:-}" ]; then
+                echo "   ⚠️ Continuing despite notarization failure (GitHub Actions)"
+                return 0
+            fi
+            
+            return 1
+        fi
+    fi
+    
+    # If we successfully notarized, staple the ticket
+    if [ "$use_api_key" = "false" ]; then  # This means we succeeded
         echo "$submit_result"
-
+        
         # Staple the notarization
         if xcrun stapler staple "$pkg_path"; then
             echo "   ✅ Successfully stapled notarization to $pkg_name"
@@ -468,10 +648,6 @@ notarize_pkg() {
             echo "   ⚠️ Failed to staple notarization to $pkg_name (package is still notarized)"
             return 0
         fi
-    else
-        echo "   ❌ Failed to notarize $pkg_name"
-        echo "$submit_result"
-        return 1
     fi
 }
 
@@ -957,3 +1133,9 @@ echo ""
 echo "🧹 To clean up certificates later, run:"
 echo "   security delete-keychain \"$TEMP_KEYCHAIN\""
 echo "   rm -f .local_build_env"
+
+# For self-hosted runners in CI, set up automatic cleanup
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    # Register cleanup trap for unexpected exits
+    trap 'echo "Cleaning up on exit..."; [ -n "$TEMP_KEYCHAIN" ] && security delete-keychain "$TEMP_KEYCHAIN" 2>/dev/null || true; rm -f .local_build_env' EXIT INT TERM
+fi

@@ -60,10 +60,42 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      - name: Pre-build cleanup (self-hosted runner)
+        if: contains(inputs.runner-type || 'self-hosted', 'self-hosted')
+        shell: bash
+        run: |
+          echo "🧹 Cleaning up self-hosted runner environment..."
+          # Clean up old keychains from previous runs
+          security list-keychains -d user | grep "r2midi-" | sed 's/"//g' | while read keychain; do
+            echo "Removing old keychain: $keychain"
+            security delete-keychain "$keychain" 2>/dev/null || true
+          done
+          # Clean up old certificates
+          rm -rf /tmp/github_certs 2>/dev/null || true
+          rm -rf ~/.appstoreconnect/private_keys/AuthKey_*.p8 2>/dev/null || true
+          # Clean up old build artifacts
+          rm -rf build_client build_server 2>/dev/null || true
+          rm -f .local_build_env 2>/dev/null || true
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Make scripts executable
+        shell: bash
+        run: |
+          chmod +x *.sh 2>/dev/null || true
+          chmod +x .github/scripts/*.sh 2>/dev/null || true
+
+      - name: Detect runner environment
+        shell: bash
+        run: |
+          ./.github/scripts/detect-runner-environment.sh
+          if [ -f .runner_environment ]; then
+            source .runner_environment
+            echo "Runner type: IS_SELF_HOSTED=$IS_SELF_HOSTED"
+          fi
 
       - name: Clean environment
         shell: bash
@@ -91,9 +123,21 @@ jobs:
           APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ENABLE_NOTARIZATION: true
+          GITHUB_ACTIONS: true
         run: |
           VERSION="${{ inputs.version || '1.0.0-ci' }}"
           BUILD_TYPE="${{ inputs.build-type || 'production' }}"
+
+          # Debug: Check if required secrets are available
+          echo "Checking environment variables..."
+          [ -n "$APPLE_DEVELOPER_ID_APPLICATION_CERT" ] && echo "✅ APPLE_DEVELOPER_ID_APPLICATION_CERT is set" || echo "❌ APPLE_DEVELOPER_ID_APPLICATION_CERT is missing"
+          [ -n "$APPLE_DEVELOPER_ID_INSTALLER_CERT" ] && echo "✅ APPLE_DEVELOPER_ID_INSTALLER_CERT is set" || echo "❌ APPLE_DEVELOPER_ID_INSTALLER_CERT is missing"
+          [ -n "$APPLE_CERT_PASSWORD" ] && echo "✅ APPLE_CERT_PASSWORD is set" || echo "❌ APPLE_CERT_PASSWORD is missing"
+          [ -n "$APPLE_APP_STORE_CERTIFICATE_P12" ] && echo "✅ APPLE_APP_STORE_CERTIFICATE_P12 is set" || echo "⚠️ APPLE_APP_STORE_CERTIFICATE_P12 is not set (optional)"
+          [ -n "$APPLE_ID" ] && echo "✅ APPLE_ID is set" || echo "❌ APPLE_ID is missing"
+          [ -n "$APPLE_ID_PASSWORD" ] && echo "✅ APPLE_ID_PASSWORD is set" || echo "❌ APPLE_ID_PASSWORD is missing"
+          [ -n "$APPLE_TEAM_ID" ] && echo "✅ APPLE_TEAM_ID is set" || echo "❌ APPLE_TEAM_ID is missing"
 
           if [ "$BUILD_TYPE" = "dev" ]; then
             ./build-all-local.sh --dev --no-sign --version "$VERSION"
@@ -109,3 +153,26 @@ jobs:
           name: macos-signed-${{ github.run_number }}
           path: artifacts/
           retention-days: 30
+
+      - name: Post-build cleanup (self-hosted runner)
+        if: always() && contains(inputs.runner-type || 'self-hosted', 'self-hosted')
+        shell: bash
+        run: |
+          echo "🧹 Cleaning up after build..."
+          # Find and remove temporary keychains created during this build
+          if [ -f .local_build_env ]; then
+            source .local_build_env
+            if [ -n "${TEMP_KEYCHAIN:-}" ]; then
+              echo "Removing keychain: $TEMP_KEYCHAIN"
+              security delete-keychain "$TEMP_KEYCHAIN" 2>/dev/null || true
+            fi
+          fi
+          # Clean up certificates
+          rm -rf /tmp/github_certs 2>/dev/null || true
+          rm -rf ~/.appstoreconnect/private_keys/AuthKey_*.p8 2>/dev/null || true
+          # Clean up build files
+          rm -rf build_client build_server 2>/dev/null || true
+          rm -f .local_build_env 2>/dev/null || true
+          # Clean up any python caches
+          find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          find . -type f -name "*.pyc" -delete 2>/dev/null || true
