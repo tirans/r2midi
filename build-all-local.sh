@@ -37,12 +37,19 @@ security unlock-keychain -p "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN" || {
     security unlock-keychain -p "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
 }
 
-# Load Apple credentials from config
-if [ -f "apple_credentials/config/app_config.json" ]; then
+# Load Apple credentials - prioritize environment variables over config file
+if [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_ID_PASSWORD:-}" ]; then
+    echo "🔐 Using Apple credentials from environment variables"
+    TEAM_ID="$APPLE_TEAM_ID"
+    APPLE_ID="$APPLE_ID"
+    APP_PASSWORD="$APPLE_ID_PASSWORD"
+    ENABLE_NOTARIZATION="true"
+elif [ -f "apple_credentials/config/app_config.json" ]; then
+    echo "🔐 Using Apple credentials from config file"
     TEAM_ID=$(python3 -c "import json; print(json.load(open('apple_credentials/config/app_config.json'))['apple_developer']['team_id'])")
     APPLE_ID=$(python3 -c "import json; print(json.load(open('apple_credentials/config/app_config.json'))['apple_developer']['apple_id'])")
     APP_PASSWORD=$(python3 -c "import json; print(json.load(open('apple_credentials/config/app_config.json'))['apple_developer']['app_specific_password'])")
-    ENABLE_NOTARIZATION=$(python3 -c "import json; print(json.load(open('apple_credentials/config/app_config.json'))['build_options']['enable_notarization'])")
+    ENABLE_NOTARIZATION=$(python3 -c "import json; result = json.load(open('apple_credentials/config/app_config.json'))['build_options']['enable_notarization']; print('true' if result else 'false')")
 else
     echo "⚠️ Apple credentials not found, skipping notarization"
     TEAM_ID=""
