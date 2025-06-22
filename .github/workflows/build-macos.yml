@@ -109,6 +109,10 @@ jobs:
         shell: bash
         run: ./setup-virtual-environments.sh --use-uv
 
+      - name: Setup client virtual environment
+        shell: bash
+        run: ./setup-virtual-environments.sh --client-only
+
       - name: Test environments
         shell: bash
         run: ./test_environments.sh

@@ -194,7 +194,7 @@ if [ "$SKIP_SIGNING" = "false" ]; then
         echo "📋 Using signing script"
 
         # Build arguments for signing script
-        local sign_args="--version $VERSION"
+        sign_args="--version $VERSION"
 
         if [ "$BUILD_TYPE" = "dev" ]; then
             sign_args="$sign_args --dev"

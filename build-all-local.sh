@@ -1,6 +1,5 @@
 #!/bin/bash
 set -euo pipefail
-set -x
 # build-all-local.sh - R2MIDI build system with proper signing
 # Usage: ./build-all-local.sh [options]
 
