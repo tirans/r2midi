@@ -14,15 +14,16 @@ if [ -z "${LOGGING_UTILS_LOADED:-}" ]; then
     readonly CYAN='\033[0;36m'
     readonly WHITE='\033[1;37m'
     readonly NC='\033[0m' # No Color
+
+    # Log levels
+    readonly LOG_LEVEL_DEBUG=0
+    readonly LOG_LEVEL_INFO=1
+    readonly LOG_LEVEL_WARNING=2
+    readonly LOG_LEVEL_ERROR=3
+    readonly LOG_LEVEL_CRITICAL=4
+
     readonly LOGGING_UTILS_LOADED=1
 fi
-
-# Log levels
-readonly LOG_LEVEL_DEBUG=0
-readonly LOG_LEVEL_INFO=1
-readonly LOG_LEVEL_WARNING=2
-readonly LOG_LEVEL_ERROR=3
-readonly LOG_LEVEL_CRITICAL=4
 
 # Default log level (can be overridden by environment variable)
 LOG_LEVEL=${LOG_LEVEL:-$LOG_LEVEL_INFO}
