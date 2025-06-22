@@ -187,42 +187,42 @@ fi
 # Code signing and notarization (if not skipped)
 if [ "$SKIP_SIGNING" = "false" ]; then
     echo ""
-    echo "🔐 Starting enhanced signing and notarization..."
-    
-    # Check if enhanced signing script exists
+    echo "🔐 Starting signing and notarization..."
+
+    # Check if signing script exists
     if [ -f "../.github/scripts/sign-and-notarize-macos.sh" ]; then
-        echo "📋 Using enhanced signing script"
-        
+        echo "📋 Using signing script"
+
         # Build arguments for signing script
         local sign_args="--version $VERSION"
-        
+
         if [ "$BUILD_TYPE" = "dev" ]; then
             sign_args="$sign_args --dev"
         fi
-        
+
         if [ "$SKIP_NOTARIZATION" = "true" ]; then
             sign_args="$sign_args --skip-notarize"
         fi
-        
-        # Run enhanced signing from project root
+
+        # Run signing from project root
         cd ..
         if ./.github/scripts/sign-and-notarize-macos.sh $sign_args; then
-            echo "✅ Enhanced signing and notarization completed"
+            echo "✅ Signing and notarization completed"
         else
-            echo "❌ Enhanced signing failed"
+            echo "❌ Signing failed"
             if [ "$BUILD_TYPE" != "dev" ]; then
                 exit 1
             fi
         fi
         cd build_server
     else
-        echo "⚠️ Enhanced signing script not found, using basic signing"
-        
+        echo "⚠️ Signing script not found, using basic signing"
+
         # Fallback to basic signing
         SIGNING_IDENTITY="Developer ID Application"
         if security find-identity -v -p codesigning | grep -q "$SIGNING_IDENTITY"; then
             echo "✅ Found signing identity: $SIGNING_IDENTITY"
-            
+
             # Create basic entitlements
             cat > entitlements.plist << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -242,19 +242,19 @@ if [ "$SKIP_SIGNING" = "false" ]; then
 </dict>
 </plist>
 EOF
-            
+
             codesign --force --options runtime --entitlements entitlements.plist --deep --sign "$SIGNING_IDENTITY" "$APP_PATH"
-            
+
             # Create PKG installer
             PKG_NAME="R2MIDI-Server-${VERSION}.pkg"
             INSTALLER_PATH="artifacts/${PKG_NAME}"
-            
+
             pkgbuild --identifier "com.r2midi.server" \
                      --version "$VERSION" \
                      --install-location "/Applications" \
                      --component "dist/R2MIDI Server.app" \
                      "$INSTALLER_PATH"
-                     
+
             echo "✅ Basic signing completed"
         else
             echo "⚠️ No signing identity found - creating unsigned build"
@@ -262,12 +262,12 @@ EOF
     fi
 else
     echo "⏭️ Skipping code signing"
-    
+
     # Create unsigned PKG
     echo "📦 Creating unsigned PKG installer..."
     PKG_NAME="R2MIDI-Server-${VERSION}.pkg"
     INSTALLER_PATH="artifacts/${PKG_NAME}"
-    
+
     pkgbuild --identifier "com.r2midi.server" \
              --version "$VERSION" \
              --install-location "/Applications" \
@@ -304,7 +304,7 @@ cat > "$BUILD_REPORT" << EOF
 
 - Python Version: $(python3 --version)
 - Virtual Environment: venv_server
-- py2app Options: Enhanced configuration with duplicate file prevention
+- py2app Options: Optimized configuration with duplicate file prevention
 - Code Signing: $([ "$SKIP_SIGNING" = "false" ] && echo "Enabled" || echo "Disabled")
 - Notarization: $([ "$SKIP_NOTARIZATION" = "false" ] && echo "Enabled" || echo "Disabled")
 

@@ -1,1 +1,438 @@
-#!/bin/bash\nset -euo pipefail\n\n# sign-and-notarize-macos.sh - Orchestrator for task-specific macOS signing and notarization\n# Usage: ./sign-and-notarize-macos.sh [--version VERSION] [--dev] [--skip-notarize]\n\nSCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\nPROJECT_ROOT=\"$(cd \"$SCRIPT_DIR/../..\" && pwd)\"\n\n# Default values\nVERSION=\"\"\nBUILD_TYPE=\"production\"\nSKIP_NOTARIZATION=false\nVERBOSE=false\n\n# Parse arguments\nwhile [[ $# -gt 0 ]]; do\n    case $1 in\n        --version)\n            VERSION=\"$2\"\n            shift 2\n            ;;\n        --dev)\n            BUILD_TYPE=\"dev\"\n            shift\n            ;;\n        --skip-notarize)\n            SKIP_NOTARIZATION=true\n            shift\n            ;;\n        --verbose)\n            VERBOSE=true\n            shift\n            ;;\n        --help)\n            cat << EOF\nR2MIDI macOS Signing and Notarization Orchestrator\n\nUsage: $0 [options]\n\nOptions:\n  --version VERSION    Specify version (auto-detected if not provided)\n  --dev               Development build (less strict verification)\n  --skip-notarize     Skip notarization step\n  --verbose           Enable verbose logging\n  --help              Show this help\n\nThis orchestrator coordinates task-specific scripts:\n  - setup-certificates-ci.sh    Setup certificates\n  - sign-application.sh         Sign individual apps\n  - create-packages.sh          Create dual packages\n  - notarize-package.sh         Notarize packages\n  - cleanup-build.sh            Clean up after build\n\nExamples:\n  $0 --version 1.0.0             # Sign and notarize everything\n  $0 --dev --skip-notarize       # Development signing only\n  $0 --verbose                   # Enable detailed logging\n\nEOF\n            exit 0\n            ;;\n        *)\n            echo \"Unknown option: $1\"\n            echo \"Use --help for usage information\"\n            exit 1\n            ;;\n    esac\ndone\n\n# Logging functions\nlog_info() { echo \"ℹ️  $1\"; }\nlog_success() { echo \"✅ $1\"; }\nlog_warning() { echo \"⚠️  $1\"; }\nlog_error() { echo \"❌ $1\"; }\nlog_debug() { [ \"$VERBOSE\" = true ] && echo \"🔍 DEBUG: $1\" || true; }\nlog_step() { echo \"\"; echo \"🔄 $1\"; echo \"$(printf '=%.0s' {1..50})\"; }\n\n# Change to project root\ncd \"$PROJECT_ROOT\"\n\necho \"🍎 R2MIDI macOS Signing and Notarization Orchestrator\"\necho \"=====================================================\"\necho \"📋 Version: ${VERSION:-auto-detect}\"\necho \"🏗️ Build type: $BUILD_TYPE\"\necho \"🔔 Skip notarization: $SKIP_NOTARIZATION\"\necho \"📢 Verbose: $VERBOSE\"\necho \"\"\n\n# Step 1: Detect environment\nstep_detect_environment() {\n    log_step \"Detecting Environment\"\n    \n    if [ -f \".github/scripts/detect-runner-environment.sh\" ]; then\n        log_info \"Running environment detection...\"\n        ./.github/scripts/detect-runner-environment.sh\n        \n        if [ -f \".runner_environment\" ]; then\n            source .runner_environment\n            log_success \"Environment detected: $RUNNER_TYPE\"\n            log_debug \"Self-hosted: $IS_SELF_HOSTED\"\n            log_debug \"Capabilities: ${BUILD_CAPABILITIES:-none}\"\n        fi\n    else\n        log_warning \"Environment detection script not found\"\n    fi\n}\n\n# Step 2: Extract version\nstep_extract_version() {\n    if [ -n \"$VERSION\" ]; then\n        log_info \"Using specified version: $VERSION\"\n        return\n    fi\n    \n    log_step \"Extracting Version\"\n    \n    if [ -f \".github/scripts/extract-version.sh\" ]; then\n        VERSION=$(./.github/scripts/extract-version.sh)\n        log_success \"Extracted version: $VERSION\"\n    else\n        # Fallback version extraction\n        if [ -f \"server/version.py\" ]; then\n            VERSION=$(python3 -c \"import sys; sys.path.insert(0, 'server'); from version import __version__; print(__version__)\" 2>/dev/null || echo \"\")\n        fi\n        \n        if [ -z \"$VERSION\" ]; then\n            VERSION=\"0.1.$(date +%Y%m%d)\"\n            log_warning \"Could not detect version, using: $VERSION\"\n        else\n            log_success \"Detected version: $VERSION\"\n        fi\n    fi\n}\n\n# Step 3: Setup certificates\nstep_setup_certificates() {\n    log_step \"Setting Up Certificates\"\n    \n    # Check if we're in GitHub Actions or need CI setup\n    if [ -n \"${GITHUB_ACTIONS:-}\" ] || [ -n \"${APPLE_DEVELOPER_ID_APPLICATION_CERT:-}\" ]; then\n        log_info \"Detected CI environment, using CI certificate setup...\"\n        \n        if [ -f \".github/scripts/setup-certificates-ci.sh\" ]; then\n            ./.github/scripts/setup-certificates-ci.sh\n        else\n            log_error \"CI certificate setup script not found\"\n            return 1\n        fi\n    else\n        log_info \"Detected local environment, using local certificate setup...\"\n        \n        if [ -f \"setup-local-certificates.sh\" ]; then\n            ./setup-local-certificates.sh\n        else\n            log_error \"Local certificate setup script not found\"\n            return 1\n        fi\n    fi\n    \n    # Verify certificate environment was created\n    if [ -f \".cert_environment\" ]; then\n        source .cert_environment\n        log_success \"Certificates configured successfully\"\n    else\n        log_error \"Certificate environment not created\"\n        return 1\n    fi\n}\n\n# Step 4: Find and sign applications\nstep_sign_applications() {\n    log_step \"Signing Applications\"\n    \n    local apps_found=()\n    local signing_success=true\n    \n    # Find applications to sign\n    for build_dir in \"build_server\" \"build_client\"; do\n        if [ -d \"$build_dir/dist\" ]; then\n            local app_bundle=$(find \"$build_dir/dist\" -name \"*.app\" -type d | head -1)\n            \n            if [ -n \"$app_bundle\" ] && [ -d \"$app_bundle\" ]; then\n                apps_found+=(\"$app_bundle\")\n                log_info \"Found app: $(basename \"$app_bundle\")\"\n            else\n                log_warning \"No app bundle found in $build_dir/dist\"\n            fi\n        else\n            log_warning \"Build directory not found: $build_dir\"\n        fi\n    done\n    \n    if [ ${#apps_found[@]} -eq 0 ]; then\n        log_error \"No applications found to sign\"\n        return 1\n    fi\n    \n    # Sign each application\n    for app_path in \"${apps_found[@]}\"; do\n        local app_name=$(basename \"$app_path\")\n        local app_type=\"server\"\n        \n        # Determine app type\n        if [[ \"$app_name\" == *\"Client\"* ]] || [[ \"$app_name\" == *\"client\"* ]]; then\n            app_type=\"client\"\n        fi\n        \n        log_info \"Signing $app_name (type: $app_type)...\"\n        \n        if [ -f \".github/scripts/sign-application.sh\" ]; then\n            if ./.github/scripts/sign-application.sh \"$app_path\" \"$app_type\" \"developer_id\"; then\n                log_success \"Successfully signed $app_name\"\n            else\n                log_error \"Failed to sign $app_name\"\n                signing_success=false\n            fi\n        else\n            log_error \"Application signing script not found\"\n            signing_success=false\n        fi\n    done\n    \n    if [ \"$signing_success\" = false ]; then\n        log_error \"Some applications failed to sign\"\n        return 1\n    fi\n    \n    log_success \"All applications signed successfully\"\n}\n\n# Step 5: Create packages\nstep_create_packages() {\n    log_step \"Creating Packages\"\n    \n    local package_success=true\n    \n    # Create packages for each signed application\n    for build_dir in \"build_server\" \"build_client\"; do\n        if [ -d \"$build_dir/dist\" ]; then\n            local app_bundle=$(find \"$build_dir/dist\" -name \"*.app\" -type d | head -1)\n            \n            if [ -n \"$app_bundle\" ] && [ -d \"$app_bundle\" ]; then\n                local app_name=$(basename \"$app_bundle\" .app)\n                local pkg_name=\"R2MIDI-Server\"\n                local identifier=\"com.r2midi.server\"\n                \n                # Determine package name and identifier\n                if [[ \"$app_name\" == *\"Client\"* ]] || [[ \"$app_name\" == *\"client\"* ]]; then\n                    pkg_name=\"R2MIDI-Client\"\n                    identifier=\"com.r2midi.client\"\n                fi\n                \n                log_info \"Creating packages for $app_name...\"\n                \n                if [ -f \".github/scripts/create-packages.sh\" ]; then\n                    if ./.github/scripts/create-packages.sh \"$app_bundle\" \"$pkg_name\" \"$VERSION\" \"$identifier\"; then\n                        log_success \"Successfully created packages for $app_name\"\n                    else\n                        log_error \"Failed to create packages for $app_name\"\n                        package_success=false\n                    fi\n                else\n                    log_error \"Package creation script not found\"\n                    package_success=false\n                fi\n            fi\n        fi\n    done\n    \n    if [ \"$package_success\" = false ]; then\n        log_error \"Some packages failed to create\"\n        return 1\n    fi\n    \n    log_success \"All packages created successfully\"\n}\n\n# Step 6: Notarize packages\nstep_notarize_packages() {\n    if [ \"$SKIP_NOTARIZATION\" = true ]; then\n        log_step \"Skipping Notarization (--skip-notarize specified)\"\n        return 0\n    fi\n    \n    log_step \"Notarizing Packages\"\n    \n    local notarization_success=true\n    \n    # Find packages to notarize (only Developer ID packages need notarization)\n    local packages_to_notarize=()\n    if [ -d \"artifacts\" ]; then\n        while IFS= read -r -d '' pkg; do\n            if [[ \"$(basename \"$pkg\")\" == *\"indi.pkg\" ]]; then\n                packages_to_notarize+=(\"$pkg\")\n            fi\n        done < <(find artifacts -name \"*.pkg\" -print0)\n    fi\n    \n    if [ ${#packages_to_notarize[@]} -eq 0 ]; then\n        log_warning \"No packages found for notarization\"\n        return 0\n    fi\n    \n    # Notarize each package\n    for pkg_path in \"${packages_to_notarize[@]}\"; do\n        local pkg_name=$(basename \"$pkg_path\")\n        log_info \"Notarizing $pkg_name...\"\n        \n        if [ -f \".github/scripts/notarize-package.sh\" ]; then\n            if ./.github/scripts/notarize-package.sh \"$pkg_path\"; then\n                log_success \"Successfully notarized $pkg_name\"\n            else\n                log_error \"Failed to notarize $pkg_name\"\n                \n                # In development mode, notarization failure is not fatal\n                if [ \"$BUILD_TYPE\" = \"dev\" ]; then\n                    log_warning \"Continuing despite notarization failure (dev mode)\"\n                else\n                    notarization_success=false\n                fi\n            fi\n        else\n            log_error \"Notarization script not found\"\n            notarization_success=false\n        fi\n    done\n    \n    if [ \"$notarization_success\" = false ]; then\n        log_error \"Some packages failed to notarize\"\n        return 1\n    fi\n    \n    log_success \"All packages notarized successfully\"\n}\n\n# Step 7: Final packaging and organization\nstep_final_packaging() {\n    log_step \"Final Packaging and Organization\"\n    \n    if [ -f \".github/scripts/package-macos-apps.sh\" ]; then\n        log_info \"Running final packaging...\"\n        ./.github/scripts/package-macos-apps.sh \"$VERSION\" \"$BUILD_TYPE\"\n    else\n        log_warning \"Final packaging script not found, skipping\"\n    fi\n    \n    # Generate summary\n    if [ -d \"artifacts\" ]; then\n        log_info \"Generated artifacts:\"\n        find artifacts -name \"*.pkg\" -o -name \"*.dmg\" -o -name \"*.zip\" | sort | while read artifact; do\n            if [ -f \"$artifact\" ]; then\n                local size=$(du -sh \"$artifact\" | cut -f1)\n                log_info \"  📦 $(basename \"$artifact\") ($size)\"\n            fi\n        done\n    fi\n}\n\n# Step 8: Cleanup (optional)\nstep_cleanup() {\n    log_step \"Cleanup\"\n    \n    if [ -f \".github/scripts/cleanup-build.sh\" ]; then\n        log_info \"Running cleanup (keeping artifacts)...\"\n        ./.github/scripts/cleanup-build.sh --keep-artifacts\n    else\n        log_warning \"Cleanup script not found, manual cleanup may be needed\"\n        \n        # Basic cleanup\n        if [ -n \"${TEMP_KEYCHAIN:-}\" ]; then\n            log_info \"Cleaning up temporary keychain: $TEMP_KEYCHAIN\"\n            security delete-keychain \"$TEMP_KEYCHAIN\" 2>/dev/null || true\n        fi\n    fi\n}\n\n# Generate final report\ngenerate_final_report() {\n    log_step \"Generating Final Report\"\n    \n    local report_file=\"artifacts/SIGNING_REPORT_${VERSION}.md\"\n    mkdir -p artifacts\n    \n    cat > \"$report_file\" << EOF\n# R2MIDI macOS Signing Report\n\n**Version:** $VERSION  \n**Build Type:** $BUILD_TYPE  \n**Timestamp:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')  \n**Environment:** ${RUNNER_TYPE:-unknown}  \n**Self-hosted:** ${IS_SELF_HOSTED:-unknown}  \n\n## Signing Process\n\n✅ **Task-Specific Approach Used**\n- Environment detection and configuration\n- Certificate setup (${RUNNER_TYPE:-unknown} environment)\n- Application signing with enhanced inside-out method\n- Dual package creation (Developer ID + App Store)\n- Notarization with Apple Notary Service\n- Final packaging and organization\n- Cleanup and artifact management\n\n## Signing Configuration\n\n- **Application Certificate:** ${DEVELOPER_ID_APP_SIGNING_IDENTITY:-Not available}\n- **Installer Certificate:** ${DEVELOPER_ID_INSTALLER_SIGNING_IDENTITY:-Not available}\n- **App Store Certificate:** ${APP_STORE_SIGNING_IDENTITY:-Not available}\n- **Notarization:** $([ \"$SKIP_NOTARIZATION\" = true ] && echo \"Skipped\" || echo \"Enabled\")\n- **Method:** Enhanced inside-out signing with proper Python executable handling\n\n## Generated Artifacts\n\nEOF\n\n    # List all artifacts\n    if [ -d \"artifacts\" ]; then\n        find artifacts -name \"*.pkg\" -o -name \"*.dmg\" -o -name \"*.zip\" | sort | while read artifact; do\n            if [ -f \"$artifact\" ]; then\n                local size=$(du -sh \"$artifact\" | cut -f1)\n                echo \"- **$(basename \"$artifact\")** ($size)\" >> \"$report_file\"\n            fi\n        done\n    fi\n\n    cat >> \"$report_file\" << EOF\n\n## Verification Commands\n\n\\`\\`\\`bash\n# Verify package signatures\npkgutil --check-signature artifacts/*.pkg\n\n# Verify app signatures\ncodesign --verify --deep --strict --verbose=2 build_*/dist/*.app\n\n# Check Gatekeeper\nspctl --assess --type exec --verbose build_*/dist/*.app\nspctl --assess --type install --verbose artifacts/*.pkg\n\\`\\`\\`\n\n## Next Steps\n\n1. **Test Installation:** \\`sudo installer -pkg artifacts/R2MIDI-*-$VERSION*.pkg -target /\\`\n2. **Launch Applications:** Apps will be installed to /Applications/\n3. **Distribute:** Packages are ready for distribution\n\n---\nGenerated by task-specific signing orchestrator\nEOF\n\n    log_success \"Final report created: $report_file\"\n}\n\n# Main orchestration workflow\nmain() {\n    local overall_success=true\n    \n    # Run all steps\n    step_detect_environment || overall_success=false\n    step_extract_version || overall_success=false\n    step_setup_certificates || overall_success=false\n    step_sign_applications || overall_success=false\n    step_create_packages || overall_success=false\n    step_notarize_packages || overall_success=false\n    step_final_packaging || overall_success=false\n    \n    # Always try to generate report and cleanup\n    generate_final_report\n    step_cleanup\n    \n    # Final summary\n    log_step \"Summary\"\n    \n    if [ \"$overall_success\" = true ]; then\n        log_success \"🎉 All signing and notarization steps completed successfully!\"\n        echo \"\"\n        echo \"📦 Generated packages ready for distribution:\"\n        find artifacts -name \"*.pkg\" 2>/dev/null | while read pkg; do\n            echo \"  ✅ $(basename \"$pkg\")\"\n        done\n        echo \"\"\n        echo \"📋 Report: artifacts/SIGNING_REPORT_${VERSION}.md\"\n        echo \"🔍 Verification: Use the commands in the report to verify packages\"\n        return 0\n    else\n        log_error \"❌ Some steps failed during signing and notarization\"\n        echo \"\"\n        echo \"📋 Check the logs above for specific error details\"\n        echo \"📄 Partial report: artifacts/SIGNING_REPORT_${VERSION}.md\"\n        return 1\n    fi\n}\n\n# Run main orchestration\nmain \"$@\"
+#!/bin/bash
+set -euo pipefail
+
+# sign-and-notarize-macos.sh - Enhanced signing and notarization with detailed logging
+# This script replaces the corrupted version with proper modular design
+
+# Get script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODULES_DIR="$SCRIPT_DIR/modules"
+
+# Source required modules
+if [ -f "$MODULES_DIR/logging-utils.sh" ]; then
+    source "$MODULES_DIR/logging-utils.sh"
+else
+    echo "❌ Error: logging-utils.sh not found at $MODULES_DIR/logging-utils.sh"
+    exit 1
+fi
+
+if [ -f "$MODULES_DIR/certificate-manager.sh" ]; then
+    source "$MODULES_DIR/certificate-manager.sh"
+else
+    log_error "certificate-manager.sh not found at $MODULES_DIR/certificate-manager.sh"
+    exit 1
+fi
+
+if [ -f "$MODULES_DIR/build-utils.sh" ]; then
+    source "$MODULES_DIR/build-utils.sh"
+else
+    log_error "build-utils.sh not found at $MODULES_DIR/build-utils.sh"
+    exit 1
+fi
+
+# Default values
+VERSION=""
+BUILD_TYPE="production"
+SKIP_NOTARIZATION=false
+TARGET_PATH=""
+RETRY_COUNT=3
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --version)
+            VERSION="$2"
+            shift 2
+            ;;
+        --dev)
+            BUILD_TYPE="dev"
+            shift
+            ;;
+        --skip-notarize)
+            SKIP_NOTARIZATION=true
+            shift
+            ;;
+        --target)
+            TARGET_PATH="$2"
+            shift 2
+            ;;
+        --retry-count)
+            RETRY_COUNT="$2"
+            shift 2
+            ;;
+        --help)
+            cat << EOF
+Enhanced Signing and Notarization Script
+
+Usage: $0 [options]
+
+Options:
+  --version VERSION     Specify version
+  --dev                Development build
+  --skip-notarize      Skip notarization
+  --target PATH        Specific target to sign (optional)
+  --retry-count N      Number of retries for operations (default: 3)
+  --help               Show this help
+
+Examples:
+  $0 --version 1.0.0
+  $0 --version 1.0.0 --dev --skip-notarize
+  $0 --version 1.0.0 --target "dist/MyApp.app"
+EOF
+            exit 0
+            ;;
+        *)
+            log_error "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Validate required parameters
+if [ -z "$VERSION" ]; then
+    log_error "Version is required. Use --version VERSION"
+    exit 1
+fi
+
+# Setup logging
+create_auto_log_file "signing_${VERSION}" "logs"
+
+log_banner "Enhanced Signing and Notarization"
+log_info "Version: $VERSION"
+log_info "Build Type: $BUILD_TYPE"
+log_info "Skip Notarization: $SKIP_NOTARIZATION"
+log_info "Retry Count: $RETRY_COUNT"
+
+# Log system information
+log_system_info
+
+# Determine environment type
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    ENV_TYPE="github"
+    log_environment "github"
+else
+    ENV_TYPE="local"
+    log_environment "local"
+fi
+
+# Function to find and process targets
+find_and_process_targets() {
+    local targets=()
+    
+    if [ -n "$TARGET_PATH" ]; then
+        if [ -e "$TARGET_PATH" ]; then
+            targets=("$TARGET_PATH")
+            log_info "Using specified target: $TARGET_PATH"
+        else
+            log_error "Specified target does not exist: $TARGET_PATH"
+            return 1
+        fi
+    else
+        # Auto-discover targets
+        log_info "Auto-discovering targets..."
+        
+        # Look for app bundles in common locations
+        local search_paths=("." "build_client/dist" "build_server/dist" "dist")
+        
+        for search_path in "${search_paths[@]}"; do
+            if [ -d "$search_path" ]; then
+                while IFS= read -r -d '' app; do
+                    targets+=("$app")
+                    log_info "Found app bundle: $app"
+                done < <(find "$search_path" -name "*.app" -type d -print0 2>/dev/null)
+            fi
+        done
+        
+        # Look for pkg files in artifacts directory
+        if [ -d "artifacts" ]; then
+            while IFS= read -r -d '' pkg; do
+                targets+=("$pkg")
+                log_info "Found package: $pkg"
+            done < <(find "artifacts" -name "*.pkg" -type f -print0 2>/dev/null)
+        fi
+    fi
+    
+    if [ ${#targets[@]} -eq 0 ]; then
+        log_warning "No targets found for signing"
+        return 1
+    fi
+    
+    printf '%s\n' "${targets[@]}"
+    return 0
+}
+
+# Function to sign a target with enhanced logging
+sign_target_enhanced() {
+    local target="$1"
+    local identity="$2"
+    local entitlements="$3"
+    
+    log_step "Signing Target: $(basename "$target")"
+    log_security "Code Signing" "Starting signing process for $target"
+    log_info "Target Path: $target"
+    log_info "Signing Identity: $identity"
+    log_info "Entitlements: $entitlements"
+    
+    # Pre-signing checks
+    if [ ! -e "$target" ]; then
+        log_error "Target does not exist: $target"
+        return 1
+    fi
+    
+    # Get target information
+    if [ -d "$target" ]; then
+        local target_size=$(du -sh "$target" 2>/dev/null | cut -f1 || echo "unknown")
+        log_info "Target Type: Directory/Bundle"
+        log_info "Target Size: $target_size"
+        
+        # Check if it's an app bundle
+        if [[ "$target" == *.app ]]; then
+            log_info "App Bundle detected"
+            if [ -f "$target/Contents/Info.plist" ]; then
+                local bundle_id=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$target/Contents/Info.plist" 2>/dev/null || echo "unknown")
+                local bundle_version=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" "$target/Contents/Info.plist" 2>/dev/null || echo "unknown")
+                log_info "Bundle ID: $bundle_id"
+                log_info "Bundle Version: $bundle_version"
+            fi
+        fi
+    else
+        local target_size=$(ls -lh "$target" 2>/dev/null | awk '{print $5}' || echo "unknown")
+        log_info "Target Type: File"
+        log_info "Target Size: $target_size"
+    fi
+    
+    # Pre-signing verification
+    log_info "Pre-signing verification..."
+    local pre_sign_status=$(codesign --verify --verbose "$target" 2>&1 || echo "Not signed or invalid signature")
+    log_info "Pre-signing status: $pre_sign_status"
+    
+    # Build signing command
+    local sign_command="codesign --force --options runtime --timestamp --deep --sign \"$identity\""
+    if [ -n "$entitlements" ] && [ -f "$entitlements" ]; then
+        sign_command="$sign_command --entitlements \"$entitlements\""
+    fi
+    sign_command="$sign_command \"$target\""
+    
+    log_command "$sign_command"
+    
+    # Execute signing with retry
+    if execute_with_retry "$sign_command" "Code Signing $(basename "$target")" "$RETRY_COUNT"; then
+        # Post-signing verification
+        log_info "Post-signing verification..."
+        local post_sign_status=$(codesign --verify --verbose "$target" 2>&1 || echo "Verification failed")
+        log_info "Post-signing status: $post_sign_status"
+        
+        # Detailed signature information
+        local signature_info=$(codesign --display --verbose=4 "$target" 2>&1 || echo "Could not get signature info")
+        log_info "Signature details:"
+        echo "$signature_info" | while read -r line; do
+            log_info "  $line"
+        done
+        
+        log_success "Successfully signed: $(basename "$target")"
+        log_security "Code Signing" "Successfully signed $target with identity: $identity"
+        return 0
+    else
+        log_error "Failed to sign: $(basename "$target")"
+        log_security "Code Signing" "Failed to sign $target"
+        return 1
+    fi
+}
+
+# Function to notarize a target with enhanced logging
+notarize_target_enhanced() {
+    local target="$1"
+    
+    if [ "$SKIP_NOTARIZATION" = true ]; then
+        log_info "Skipping notarization (--skip-notarize specified)"
+        return 0
+    fi
+    
+    log_step "Notarizing Target: $(basename "$target")"
+    log_security "Notarization" "Starting notarization process for $target"
+    log_info "Target Path: $target"
+    
+    # Check if notarytool is available
+    if ! command -v xcrun >/dev/null 2>&1 || ! xcrun --find notarytool >/dev/null 2>&1; then
+        log_warning "notarytool not available - skipping notarization"
+        return 0
+    fi
+    
+    # Check for required environment variables
+    if [ -z "${APPLE_ID:-}" ] || [ -z "${APPLE_ID_PASSWORD:-}" ] || [ -z "${APPLE_TEAM_ID:-}" ]; then
+        log_warning "Apple ID credentials not configured - skipping notarization"
+        log_info "Required: APPLE_ID, APPLE_ID_PASSWORD, APPLE_TEAM_ID"
+        return 0
+    fi
+    
+    log_info "Apple ID: $APPLE_ID"
+    log_info "Team ID: $APPLE_TEAM_ID"
+    
+    # Create temporary zip for notarization if it's an app bundle
+    local notarize_file="$target"
+    local temp_zip=""
+    
+    if [[ "$target" == *.app ]]; then
+        temp_zip="/tmp/$(basename "$target" .app)-notarize-$(date +%s).zip"
+        log_info "Creating temporary zip for notarization: $temp_zip"
+        
+        if ditto -c -k --keepParent "$target" "$temp_zip"; then
+            notarize_file="$temp_zip"
+            log_success "Created notarization zip"
+        else
+            log_error "Failed to create notarization zip"
+            return 1
+        fi
+    fi
+    
+    # Submit for notarization
+    log_info "Submitting for notarization..."
+    local notarize_command="xcrun notarytool submit \"$notarize_file\" --apple-id \"$APPLE_ID\" --password \"$APPLE_ID_PASSWORD\" --team-id \"$APPLE_TEAM_ID\" --wait"
+    
+    if execute_with_retry "$notarize_command" "Notarization $(basename "$target")" "$RETRY_COUNT" 10 1800; then
+        log_success "Notarization completed successfully"
+        log_security "Notarization" "Successfully notarized $target"
+        
+        # Staple the notarization (for app bundles)
+        if [[ "$target" == *.app ]]; then
+            log_info "Stapling notarization to app bundle..."
+            if xcrun stapler staple "$target"; then
+                log_success "Notarization stapled successfully"
+                log_security "Notarization" "Successfully stapled notarization to $target"
+            else
+                log_warning "Failed to staple notarization (app may still work)"
+            fi
+        fi
+        
+        # Clean up temporary zip
+        if [ -n "$temp_zip" ] && [ -f "$temp_zip" ]; then
+            rm -f "$temp_zip"
+            log_info "Cleaned up temporary zip"
+        fi
+        
+        return 0
+    else
+        log_error "Notarization failed"
+        log_security "Notarization" "Failed to notarize $target"
+        
+        # Clean up temporary zip on failure
+        if [ -n "$temp_zip" ] && [ -f "$temp_zip" ]; then
+            rm -f "$temp_zip"
+        fi
+        
+        return 1
+    fi
+}
+
+# Main execution
+main() {
+    local start_time=$(start_timer)
+    
+    log_step "Starting Enhanced Signing Process"
+    
+    # Get certificate information
+    log_step "Certificate Discovery and Validation"
+    list_signing_identities "Developer ID Application" || {
+        log_error "No Developer ID Application certificates found"
+        exit 1
+    }
+    
+    # Select signing identity
+    local signing_identity
+    signing_identity=$(select_signing_identity "Developer ID Application" "${APPLE_TEAM_ID:-}")
+    
+    if [ -z "$signing_identity" ]; then
+        log_error "No valid signing identity found"
+        exit 1
+    fi
+    
+    log_info "Selected signing identity: $signing_identity"
+    
+    # Validate certificate
+    if ! validate_certificate "$signing_identity"; then
+        log_error "Certificate validation failed"
+        exit 1
+    fi
+    
+    # Find targets
+    local targets
+    if ! targets=($(find_and_process_targets)); then
+        log_error "No valid targets found"
+        exit 1
+    fi
+    
+    # Create entitlements file
+    local entitlements_file="/tmp/enhanced-entitlements-$(date +%s).plist"
+    cat > "$entitlements_file" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+</dict>
+</plist>
+EOF
+    
+    log_info "Created entitlements file: $entitlements_file"
+    
+    # Process each target
+    local overall_success=true
+    local processed_count=0
+    local total_count=${#targets[@]}
+    
+    for target in "${targets[@]}"; do
+        processed_count=$((processed_count + 1))
+        log_progress "$processed_count" "$total_count" "Processing $(basename "$target")"
+        
+        # Sign the target
+        if sign_target_enhanced "$target" "$signing_identity" "$entitlements_file"; then
+            # Notarize the target
+            if notarize_target_enhanced "$target"; then
+                log_success "Successfully processed: $(basename "$target")"
+            else
+                log_error "Notarization failed for: $(basename "$target")"
+                if [ "$BUILD_TYPE" != "dev" ]; then
+                    overall_success=false
+                fi
+            fi
+        else
+            log_error "Signing failed for: $(basename "$target")"
+            overall_success=false
+        fi
+    done
+    
+    # Cleanup
+    if [ -f "$entitlements_file" ]; then
+        rm -f "$entitlements_file"
+        log_info "Cleaned up entitlements file"
+    fi
+    
+    # Final summary
+    local duration=$(end_timer "$start_time" "Enhanced Signing Process")
+    log_step "Enhanced Signing Summary"
+    
+    if [ "$overall_success" = true ]; then
+        log_success "All targets processed successfully!"
+        create_summary_report "Enhanced Signing and Notarization" "SUCCESS" "Processed $total_count targets in ${duration}s"
+        exit 0
+    else
+        log_error "Some targets failed processing"
+        create_summary_report "Enhanced Signing and Notarization" "FAILED" "Some of $total_count targets failed"
+        exit 1
+    fi
+}
+
+# Run main function
+main "$@"

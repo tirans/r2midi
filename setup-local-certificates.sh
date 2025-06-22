@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Enhanced certificate setup for local macOS builds
+# Certificate setup for local macOS builds
 # Usage: ./setup-local-certificates.sh [--verify-only]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -155,7 +155,7 @@ check_certificate_details() {
 
     # Check for installer certificate
     local installer_cert_info
-    installer_cert_info=$(security find-identity -v -p codesigning | grep "Developer ID Installer" | head -1)
+    installer_cert_info=$(security find-identity -v -p codesigning | grep "Developer ID Installer" | head -1 || true)
 
     if [ -n "$installer_cert_info" ]; then
         local installer_cert_name=$(echo "$installer_cert_info" | sed 's/.*"\(.*\)".*/\1/')
@@ -278,7 +278,7 @@ EOF
    source .local_build_env
    \`\`\`
 
-2. Run the enhanced signing script:
+2. Run the signing script:
    \`\`\`bash
    ./.github/scripts/sign-and-notarize-macos.sh --version 1.0.0
    \`\`\`
@@ -329,7 +329,7 @@ EOF
 
 # Main setup function
 main() {
-    log_info "🔧 Enhanced Certificate Setup for R2MIDI"
+    log_info "🔧 Certificate Setup for R2MIDI"
     log_info "========================================"
 
     # Load configuration

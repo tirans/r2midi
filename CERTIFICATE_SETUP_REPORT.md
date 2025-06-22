@@ -1,6 +1,6 @@
 # Certificate Setup Report
 
-**Generated:** Sun Jun 22 16:32:02 IDT 2025  
+**Generated:** Sun Jun 22 18:58:04 IDT 2025  
 **Apple ID:** tiran@outlook.com  
 **Team ID:** 79449BGAM5  
 
@@ -21,7 +21,7 @@
    source .local_build_env
    ```
 
-2. Run the enhanced signing script:
+2. Run the signing script:
    ```bash
    ./.github/scripts/sign-and-notarize-macos.sh --version 1.0.0
    ```

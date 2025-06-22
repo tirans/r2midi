@@ -1,4 +1,4 @@
-# R2MIDI Enhanced Build System - Quick Start
+# R2MIDI Build System - Quick Start
 
 ## 🚀 Quick Setup
 
