@@ -4,14 +4,18 @@
 # Provides consistent logging functions with timestamps, colors, and different log levels
 
 # Color codes for terminal output
-readonly RED='\033[0;31m'
-readonly GREEN='\033[0;32m'
-readonly YELLOW='\033[1;33m'
-readonly BLUE='\033[0;34m'
-readonly PURPLE='\033[0;35m'
-readonly CYAN='\033[0;36m'
-readonly WHITE='\033[1;37m'
-readonly NC='\033[0m' # No Color
+# Guard against multiple sourcing
+if [ -z "${LOGGING_UTILS_LOADED:-}" ]; then
+    readonly RED='\033[0;31m'
+    readonly GREEN='\033[0;32m'
+    readonly YELLOW='\033[1;33m'
+    readonly BLUE='\033[0;34m'
+    readonly PURPLE='\033[0;35m'
+    readonly CYAN='\033[0;36m'
+    readonly WHITE='\033[1;37m'
+    readonly NC='\033[0m' # No Color
+    readonly LOGGING_UTILS_LOADED=1
+fi
 
 # Log levels
 readonly LOG_LEVEL_DEBUG=0
@@ -43,22 +47,22 @@ write_log() {
     local color="$3"
     local icon="$4"
     local message="$5"
-    
+
     # Check if we should log this level
     if [ "$level_num" -lt "$LOG_LEVEL" ]; then
         return 0
     fi
-    
+
     local timestamp=$(get_timestamp)
     local formatted_message="[$timestamp] $icon $message"
-    
+
     # Output to console with color
     if [ -t 1 ]; then  # Check if stdout is a terminal
         echo -e "${color}${formatted_message}${NC}"
     else
         echo "$formatted_message"
     fi
-    
+
     # Output to log file if specified
     if [ -n "$LOG_FILE" ]; then
         echo "$formatted_message" >> "$LOG_FILE"
@@ -99,7 +103,7 @@ log_critical() {
 log_step() {
     local message="$1"
     local separator_length=60
-    
+
     echo ""
     write_log "STEP" "$LOG_LEVEL_INFO" "$CYAN" "🔄" "$message"
     echo "$(printf '=%.0s' $(seq 1 $separator_length))"
@@ -110,7 +114,7 @@ log_progress() {
     local current="$1"
     local total="$2"
     local message="$3"
-    
+
     local percentage=$((current * 100 / total))
     write_log "PROGRESS" "$LOG_LEVEL_INFO" "$BLUE" "📊" "[$current/$total] ($percentage%) $message"
 }
@@ -125,7 +129,7 @@ log_command() {
 log_result() {
     local exit_code="$1"
     local command="$2"
-    
+
     if [ "$exit_code" -eq 0 ]; then
         log_success "Command succeeded: $command"
     else
@@ -138,12 +142,12 @@ log_file_op() {
     local operation="$1"
     local file_path="$2"
     local details="${3:-}"
-    
+
     local message="$operation: $file_path"
     if [ -n "$details" ]; then
         message="$message ($details)"
     fi
-    
+
     write_log "FILE_OP" "$LOG_LEVEL_INFO" "$CYAN" "📁" "$message"
 }
 
@@ -152,12 +156,12 @@ log_network() {
     local operation="$1"
     local endpoint="$2"
     local details="${3:-}"
-    
+
     local message="$operation: $endpoint"
     if [ -n "$details" ]; then
         message="$message ($details)"
     fi
-    
+
     write_log "NETWORK" "$LOG_LEVEL_INFO" "$BLUE" "🌐" "$message"
 }
 
@@ -165,7 +169,7 @@ log_network() {
 log_security() {
     local operation="$1"
     local details="$2"
-    
+
     write_log "SECURITY" "$LOG_LEVEL_INFO" "$YELLOW" "🔐" "$operation: $details"
 }
 
@@ -174,12 +178,12 @@ log_performance() {
     local operation="$1"
     local duration="$2"
     local details="${3:-}"
-    
+
     local message="$operation completed in ${duration}s"
     if [ -n "$details" ]; then
         message="$message ($details)"
     fi
-    
+
     write_log "PERFORMANCE" "$LOG_LEVEL_INFO" "$GREEN" "⏱️ " "$message"
 }
 
@@ -193,10 +197,10 @@ end_timer() {
     local start_time="$1"
     local operation="$2"
     local details="${3:-}"
-    
+
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
-    
+
     log_performance "$operation" "$duration" "$details"
     echo "$duration"
 }
@@ -204,7 +208,7 @@ end_timer() {
 # Function to set log level from string
 set_log_level() {
     local level_string="$1"
-    
+
     case "${level_string^^}" in
         "DEBUG")
             LOG_LEVEL=$LOG_LEVEL_DEBUG
@@ -225,7 +229,7 @@ set_log_level() {
             log_warning "Unknown log level: $level_string, keeping current level"
             ;;
     esac
-    
+
     log_info "Log level set to: $level_string"
 }
 
@@ -233,7 +237,7 @@ set_log_level() {
 set_log_file() {
     local file_path="$1"
     local create_dir="${2:-true}"
-    
+
     # Create directory if it doesn't exist
     if [ "$create_dir" = "true" ]; then
         local dir_path=$(dirname "$file_path")
@@ -241,10 +245,10 @@ set_log_file() {
             mkdir -p "$dir_path"
         fi
     fi
-    
+
     LOG_FILE="$file_path"
     log_info "Log file set to: $LOG_FILE"
-    
+
     # Write header to log file
     {
         echo "========================================"
@@ -261,14 +265,14 @@ set_log_file() {
 create_auto_log_file() {
     local base_name="${1:-build}"
     local log_dir="${2:-logs}"
-    
+
     # Create logs directory if it doesn't exist
     mkdir -p "$log_dir"
-    
+
     # Generate log file name with timestamp
     local timestamp=$(get_iso_timestamp)
     local log_file="$log_dir/${base_name}_${timestamp}.log"
-    
+
     set_log_file "$log_file"
     echo "$log_file"
 }
@@ -283,20 +287,20 @@ log_system_info() {
     log_info "Working Directory: $(pwd)"
     log_info "Shell: $SHELL"
     log_info "PATH: $PATH"
-    
+
     # macOS specific information
     if [ "$(uname)" = "Darwin" ]; then
         local macos_version=$(sw_vers -productVersion 2>/dev/null || echo "unknown")
         local build_version=$(sw_vers -buildVersion 2>/dev/null || echo "unknown")
         log_info "macOS Version: $macos_version (Build: $build_version)"
-        
+
         # Xcode information
         if command -v xcodebuild >/dev/null 2>&1; then
             local xcode_version=$(xcodebuild -version 2>/dev/null | head -1 || echo "unknown")
             log_info "Xcode: $xcode_version"
         fi
     fi
-    
+
     # Environment variables of interest
     local env_vars=("GITHUB_ACTIONS" "CI" "APPLE_ID" "APPLE_TEAM_ID" "BUILD_TYPE")
     for var in "${env_vars[@]}"; do
@@ -313,9 +317,9 @@ log_system_info() {
 # Function to log environment summary
 log_environment() {
     local env_type="${1:-unknown}"
-    
+
     log_step "Environment: $env_type"
-    
+
     case "$env_type" in
         "github")
             log_info "Running in GitHub Actions"
@@ -339,7 +343,7 @@ create_summary_report() {
     local status="$2"
     local details="${3:-}"
     local output_file="${4:-}"
-    
+
     local timestamp=$(get_timestamp)
     local summary="
 ========================================
@@ -350,18 +354,18 @@ Timestamp: $timestamp
 Details: $details
 ========================================
 "
-    
+
     if [ "$status" = "SUCCESS" ]; then
         log_success "$operation completed successfully"
     else
         log_error "$operation failed: $details"
     fi
-    
+
     if [ -n "$output_file" ]; then
         echo "$summary" > "$output_file"
         log_info "Summary report written to: $output_file"
     fi
-    
+
     echo "$summary"
 }
 
@@ -371,7 +375,7 @@ log_custom() {
     local color="$2"
     local message="$3"
     local level_num="${4:-$LOG_LEVEL_INFO}"
-    
+
     write_log "CUSTOM" "$level_num" "$color" "$icon" "$message"
 }
 
@@ -379,7 +383,7 @@ log_custom() {
 log_separator() {
     local char="${1:--}"
     local length="${2:-60}"
-    
+
     echo "$(printf "${char}%.0s" $(seq 1 $length))"
 }
 
@@ -388,10 +392,10 @@ log_banner() {
     local message="$1"
     local char="${2:-=}"
     local padding="${3:-2}"
-    
+
     local message_length=${#message}
     local total_length=$((message_length + padding * 2))
-    
+
     log_separator "$char" "$total_length"
     printf "%*s%s%*s\n" $padding "" "$message" $padding ""
     log_separator "$char" "$total_length"
