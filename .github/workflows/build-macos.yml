@@ -66,10 +66,14 @@ jobs:
         run: |
           echo "🧹 Cleaning up self-hosted runner environment..."
           # Clean up old keychains from previous runs
-          security list-keychains -d user | grep "r2midi-" | sed 's/"//g' | while read keychain; do
-            echo "Removing old keychain: $keychain"
-            security delete-keychain "$keychain" 2>/dev/null || true
-          done
+          if security list-keychains -d user | grep -q "r2midi-"; then
+            security list-keychains -d user | grep "r2midi-" | sed 's/"//g' | while read keychain; do
+              echo "Removing old keychain: $keychain"
+              security delete-keychain "$keychain" 2>/dev/null || true
+            done
+          else
+            echo "No r2midi keychains found to clean up"
+          fi
           # Clean up old certificates
           rm -rf /tmp/github_certs 2>/dev/null || true
           rm -rf ~/.appstoreconnect/private_keys/AuthKey_*.p8 2>/dev/null || true

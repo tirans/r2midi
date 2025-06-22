@@ -92,7 +92,9 @@ EOF
     # Clean up any existing keychain (handle both GitHub-hosted and self-hosted runners)
     security delete-keychain "$TEMP_KEYCHAIN" 2>/dev/null || true
     # Clean up any leftover r2midi keychains from previous runs (important for self-hosted runners)
-    security list-keychains -d user | grep "r2midi-" | sed 's/"//g' | xargs -I {} security delete-keychain {} 2>/dev/null || true
+    if security list-keychains -d user | grep -q "r2midi-"; then
+        security list-keychains -d user | grep "r2midi-" | sed 's/"//g' | xargs -I {} security delete-keychain {} 2>/dev/null || true
+    fi
 
     # Create and configure keychain
     security create-keychain -p "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
