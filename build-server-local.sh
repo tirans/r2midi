@@ -184,21 +184,47 @@ if command -v du >/dev/null 2>&1; then
     echo "📦 App bundle size: $app_size"
 fi
 
-# Code signing (if not skipped)
+# Code signing and notarization (if not skipped)
 if [ "$SKIP_SIGNING" = "false" ]; then
     echo ""
-    echo "🔐 Code signing server app..."
-
-    # Check for signing identity
-    SIGNING_IDENTITY="Developer ID Application"
-    if security find-identity -v -p codesigning | grep -q "$SIGNING_IDENTITY"; then
-        echo "✅ Found signing identity: $SIGNING_IDENTITY"
-
-        # Sign the app with entitlements for server functionality
-        echo "🔏 Signing app bundle with server entitlements..."
-
-        # Create entitlements for server
-        cat > entitlements.plist << EOF
+    echo "🔐 Starting enhanced signing and notarization..."
+    
+    # Check if enhanced signing script exists
+    if [ -f "../.github/scripts/sign-and-notarize-macos.sh" ]; then
+        echo "📋 Using enhanced signing script"
+        
+        # Build arguments for signing script
+        local sign_args="--version $VERSION"
+        
+        if [ "$BUILD_TYPE" = "dev" ]; then
+            sign_args="$sign_args --dev"
+        fi
+        
+        if [ "$SKIP_NOTARIZATION" = "true" ]; then
+            sign_args="$sign_args --skip-notarize"
+        fi
+        
+        # Run enhanced signing from project root
+        cd ..
+        if ./.github/scripts/sign-and-notarize-macos.sh $sign_args; then
+            echo "✅ Enhanced signing and notarization completed"
+        else
+            echo "❌ Enhanced signing failed"
+            if [ "$BUILD_TYPE" != "dev" ]; then
+                exit 1
+            fi
+        fi
+        cd build_server
+    else
+        echo "⚠️ Enhanced signing script not found, using basic signing"
+        
+        # Fallback to basic signing
+        SIGNING_IDENTITY="Developer ID Application"
+        if security find-identity -v -p codesigning | grep -q "$SIGNING_IDENTITY"; then
+            echo "✅ Found signing identity: $SIGNING_IDENTITY"
+            
+            # Create basic entitlements
+            cat > entitlements.plist << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -213,146 +239,40 @@ if [ "$SKIP_SIGNING" = "false" ]; then
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
-    <key>com.apple.security.device.audio-input</key>
-    <true/>
-    <key>com.apple.security.device.microphone</key>
-    <true/>
-    <key>com.apple.security.files.user-selected.read-write</key>
-    <true/>
-    <key>com.apple.security.files.downloads.read-write</key>
-    <true/>
 </dict>
 </plist>
 EOF
-
-        codesign --force --options runtime --entitlements entitlements.plist --deep --sign "$SIGNING_IDENTITY" "$APP_PATH"
-
-        # Verify signature
-        echo "🔍 Verifying signature..."
-        if codesign --verify --verbose "$APP_PATH"; then
-            echo "✅ App successfully signed"
+            
+            codesign --force --options runtime --entitlements entitlements.plist --deep --sign "$SIGNING_IDENTITY" "$APP_PATH"
+            
+            # Create PKG installer
+            PKG_NAME="R2MIDI-Server-${VERSION}.pkg"
+            INSTALLER_PATH="artifacts/${PKG_NAME}"
+            
+            pkgbuild --identifier "com.r2midi.server" \
+                     --version "$VERSION" \
+                     --install-location "/Applications" \
+                     --component "dist/R2MIDI Server.app" \
+                     "$INSTALLER_PATH"
+                     
+            echo "✅ Basic signing completed"
         else
-            echo "❌ App signing verification failed"
-            if [ "$BUILD_TYPE" != "dev" ]; then
-                deactivate
-                exit 1
-            fi
-        fi
-    else
-        echo "⚠️ No signing identity found - creating unsigned build"
-        if [ "$BUILD_TYPE" != "dev" ]; then
-            echo "💡 For signed builds, install Apple Developer certificates"
+            echo "⚠️ No signing identity found - creating unsigned build"
         fi
     fi
 else
     echo "⏭️ Skipping code signing"
-fi
-
-# Create PKG installer
-echo ""
-echo "📦 Creating PKG installer..."
-
-PKG_NAME="R2MIDI-Server-${VERSION}.pkg"
-INSTALLER_PATH="artifacts/${PKG_NAME}"
-
-# Create component package
-pkgbuild --identifier "com.r2midi.server" \
-         --version "$VERSION" \
-         --install-location "/Applications" \
-         --component "dist/R2MIDI Server.app" \
-         "$INSTALLER_PATH"
-
-if [ -f "$INSTALLER_PATH" ]; then
-    echo "✅ PKG installer created: $INSTALLER_PATH"
-
-    # Show installer size
-    if command -v du >/dev/null 2>&1; then
-        pkg_size=$(du -sh "$INSTALLER_PATH" | cut -f1)
-        echo "📦 PKG installer size: $pkg_size"
-    fi
-else
-    echo "❌ PKG installer creation failed"
-    deactivate
-    exit 1
-fi
-
-# Sign PKG installer (if not skipped)
-if [ "$SKIP_SIGNING" = "false" ]; then
-    echo ""
-    echo "🔐 Signing PKG installer..."
-
-    # Check for installer signing identity
-    INSTALLER_SIGNING_IDENTITY="Developer ID Installer"
-    if security find-identity -v -p codesigning | grep -q "$INSTALLER_SIGNING_IDENTITY"; then
-        echo "✅ Found installer signing identity: $INSTALLER_SIGNING_IDENTITY"
-
-        # Sign the PKG
-        echo "🔏 Signing PKG installer..."
-        productsign --sign "$INSTALLER_SIGNING_IDENTITY" "$INSTALLER_PATH" "${INSTALLER_PATH}.signed"
-
-        if [ -f "${INSTALLER_PATH}.signed" ]; then
-            mv "${INSTALLER_PATH}.signed" "$INSTALLER_PATH"
-            echo "✅ PKG installer successfully signed"
-        else
-            echo "❌ PKG installer signing failed"
-            if [ "$BUILD_TYPE" != "dev" ]; then
-                deactivate
-                exit 1
-            fi
-        fi
-    else
-        echo "⚠️ No installer signing identity found"
-        if [ "$BUILD_TYPE" != "dev" ]; then
-            echo "💡 For signed PKGs, install Apple Developer certificates"
-        fi
-    fi
-else
-    echo "⏭️ Skipping PKG signing"
-fi
-
-# Notarization (if not skipped)
-if [ "$SKIP_NOTARIZATION" = "false" ] && [ "$SKIP_SIGNING" = "false" ]; then
-    echo ""
-    echo "📋 Notarizing PKG installer..."
-
-    # Check for notarization credentials
-    if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_ID_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
-        echo "✅ Found notarization credentials"
-
-        # Submit for notarization
-        echo "🚀 Submitting to Apple for notarization..."
-        NOTARIZATION_LOG="notarization_server_${VERSION}.log"
-
-        if xcrun notarytool submit "$INSTALLER_PATH" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_ID_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait > "$NOTARIZATION_LOG" 2>&1; then
-
-            echo "✅ Notarization completed successfully"
-
-            # Staple the notarization
-            echo "📎 Stapling notarization ticket..."
-            if xcrun stapler staple "$INSTALLER_PATH"; then
-                echo "✅ Notarization ticket stapled"
-            else
-                echo "⚠️ Failed to staple notarization ticket"
-            fi
-        else
-            echo "❌ Notarization failed"
-            echo "📋 Notarization log:"
-            cat "$NOTARIZATION_LOG" || true
-            if [ "$BUILD_TYPE" != "dev" ]; then
-                deactivate
-                exit 1
-            fi
-        fi
-    else
-        echo "⚠️ No notarization credentials found"
-        echo "💡 Set APPLE_ID, APPLE_ID_PASSWORD, and APPLE_TEAM_ID for notarization"
-    fi
-else
-    echo "⏭️ Skipping notarization"
+    
+    # Create unsigned PKG
+    echo "📦 Creating unsigned PKG installer..."
+    PKG_NAME="R2MIDI-Server-${VERSION}.pkg"
+    INSTALLER_PATH="artifacts/${PKG_NAME}"
+    
+    pkgbuild --identifier "com.r2midi.server" \
+             --version "$VERSION" \
+             --install-location "/Applications" \
+             --component "dist/R2MIDI Server.app" \
+             "$INSTALLER_PATH"
 fi
 
 # Copy artifacts to main artifacts directory
