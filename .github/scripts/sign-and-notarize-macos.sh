@@ -119,7 +119,7 @@ fi
 # Function to find and process targets
 find_and_process_targets() {
     local targets=()
-    
+
     if [ -n "$TARGET_PATH" ]; then
         if [ -e "$TARGET_PATH" ]; then
             targets=("$TARGET_PATH")
@@ -131,10 +131,10 @@ find_and_process_targets() {
     else
         # Auto-discover targets
         log_info "Auto-discovering targets..."
-        
+
         # Look for app bundles in common locations
         local search_paths=("." "build_client/dist" "build_server/dist" "dist")
-        
+
         for search_path in "${search_paths[@]}"; do
             if [ -d "$search_path" ]; then
                 while IFS= read -r -d '' app; do
@@ -143,7 +143,7 @@ find_and_process_targets() {
                 done < <(find "$search_path" -name "*.app" -type d -print0 2>/dev/null)
             fi
         done
-        
+
         # Look for pkg files in artifacts directory
         if [ -d "artifacts" ]; then
             while IFS= read -r -d '' pkg; do
@@ -152,12 +152,12 @@ find_and_process_targets() {
             done < <(find "artifacts" -name "*.pkg" -type f -print0 2>/dev/null)
         fi
     fi
-    
+
     if [ ${#targets[@]} -eq 0 ]; then
         log_warning "No targets found for signing"
         return 1
     fi
-    
+
     printf '%s\n' "${targets[@]}"
     return 0
 }
@@ -167,25 +167,153 @@ sign_target_enhanced() {
     local target="$1"
     local identity="$2"
     local entitlements="$3"
-    
+
     log_step "Signing Target: $(basename "$target")"
     log_security "Code Signing" "Starting signing process for $target"
     log_info "Target Path: $target"
     log_info "Signing Identity: $identity"
     log_info "Entitlements: $entitlements"
-    
+
     # Pre-signing checks
     if [ ! -e "$target" ]; then
         log_error "Target does not exist: $target"
         return 1
     fi
-    
+
+    # Clean up app bundle to remove resource forks and metadata
+    if [[ "$target" == *.app ]]; then
+        log_info "Performing aggressive app bundle cleanup..."
+
+        # Step 1: Remove all metadata files and directories
+        log_info "Removing metadata files and directories..."
+        find "$target" -name ".DS_Store" -delete 2>/dev/null || true
+        find "$target" -name "__MACOSX" -type d -exec rm -rf {} + 2>/dev/null || true
+        find "$target" -name "._*" -delete 2>/dev/null || true
+        find "$target" -name ".fseventsd" -type d -exec rm -rf {} + 2>/dev/null || true
+        find "$target" -name ".Spotlight-V100" -type d -exec rm -rf {} + 2>/dev/null || true
+        find "$target" -name ".Trashes" -type d -exec rm -rf {} + 2>/dev/null || true
+        find "$target" -name ".TemporaryItems" -type d -exec rm -rf {} + 2>/dev/null || true
+
+        # Step 2: Aggressively strip all extended attributes and resource forks
+        log_info "Stripping extended attributes and resource forks..."
+
+        # Use xattr -cr to recursively clear all extended attributes
+        xattr -cr "$target" 2>/dev/null || true
+
+        # Additional cleanup for specific problematic files
+        find "$target" -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.framework" \) -exec xattr -c {} \; 2>/dev/null || true
+
+        # Step 3: Special handling for Python.framework
+        local python_framework="$target/Contents/Frameworks/Python.framework"
+        if [ -d "$python_framework" ]; then
+            log_info "Special cleanup for Python.framework..."
+
+            # Remove all extended attributes from Python.framework recursively
+            xattr -cr "$python_framework" 2>/dev/null || true
+
+            # Remove any resource forks specifically from Python.framework
+            find "$python_framework" -name "._*" -delete 2>/dev/null || true
+
+            # Clean up any .DS_Store files in the framework
+            find "$python_framework" -name ".DS_Store" -delete 2>/dev/null || true
+
+            log_info "Python.framework cleanup completed"
+        fi
+
+        # Step 4: Rebuild app bundle from scratch without extended attributes
+        log_info "Rebuilding app bundle from scratch without extended attributes..."
+        local temp_app="/tmp/$(basename "$target")-rebuilt-$(date +%s)"
+
+        # Create the basic app bundle structure
+        mkdir -p "$temp_app/Contents/MacOS"
+        mkdir -p "$temp_app/Contents/Resources"
+        mkdir -p "$temp_app/Contents/Frameworks"
+
+        # Copy files using rsync to avoid extended attributes
+        if command -v rsync >/dev/null 2>&1; then
+            log_info "Using rsync to copy files without extended attributes..."
+
+            # Copy with rsync, excluding extended attributes and resource forks
+            if rsync -av --no-extended-attributes --no-specials --no-devices \
+                     --exclude="._*" --exclude=".DS_Store" --exclude="__MACOSX" \
+                     "$target/" "$temp_app/" 2>/dev/null; then
+                log_success "Successfully copied app bundle with rsync"
+            else
+                log_warning "rsync failed, falling back to manual copy"
+
+                # Manual copy as fallback
+                cp -R "$target/Contents" "$temp_app/" 2>/dev/null || true
+            fi
+        else
+            log_info "rsync not available, using manual copy method..."
+
+            # Manual copy method
+            cp -R "$target/Contents" "$temp_app/" 2>/dev/null || true
+        fi
+
+        # Ensure no extended attributes on the rebuilt bundle
+        log_info "Stripping all extended attributes from rebuilt bundle..."
+        find "$temp_app" -exec xattr -c {} \; 2>/dev/null || true
+
+        # Verify the rebuilt copy is clean
+        local rebuilt_xattr_count=$(find "$temp_app" -exec xattr -l {} \; 2>/dev/null | wc -l || echo "0")
+        log_info "Extended attributes in rebuilt copy: $rebuilt_xattr_count"
+
+        if [ "$rebuilt_xattr_count" -eq 0 ]; then
+            log_success "Successfully created clean rebuilt app bundle"
+            rm -rf "$target"
+            mv "$temp_app" "$target"
+            log_success "Replaced original with rebuilt clean copy"
+        else
+            log_warning "Rebuilt copy still has extended attributes, trying nuclear option..."
+
+            # Nuclear option: Use tar to completely strip everything
+            local tar_temp="/tmp/$(basename "$target")-tar-$(date +%s).tar"
+
+            if tar -cf "$tar_temp" -C "$(dirname "$target")" "$(basename "$target")" 2>/dev/null; then
+                rm -rf "$target"
+                tar -xf "$tar_temp" -C "$(dirname "$target")" 2>/dev/null
+                rm -f "$tar_temp"
+
+                # Final cleanup
+                find "$target" -exec xattr -c {} \; 2>/dev/null || true
+
+                local final_tar_count=$(find "$target" -exec xattr -l {} \; 2>/dev/null | wc -l || echo "0")
+                log_info "Extended attributes after tar method: $final_tar_count"
+
+                if [ "$final_tar_count" -eq 0 ]; then
+                    log_success "Nuclear tar method succeeded"
+                else
+                    log_warning "Even nuclear method failed, proceeding anyway"
+                fi
+            else
+                log_warning "Tar method failed, using rebuilt copy anyway"
+                rm -rf "$target"
+                mv "$temp_app" "$target"
+            fi
+        fi
+
+        # Step 5: Final verification
+        log_info "Performing final cleanup verification..."
+        local final_xattr_count=$(find "$target" -exec xattr -l {} \; 2>/dev/null | wc -l || echo "0")
+        log_info "Final extended attributes count: $final_xattr_count"
+
+        # One more aggressive cleanup if needed
+        if [ "$final_xattr_count" -gt 0 ]; then
+            log_info "Performing final aggressive cleanup..."
+            xattr -cr "$target" 2>/dev/null || true
+            find "$target" -type f -exec xattr -c {} \; 2>/dev/null || true
+        fi
+
+        log_success "Aggressive app bundle cleanup completed"
+    fi
+
     # Get target information
     if [ -d "$target" ]; then
         local target_size=$(du -sh "$target" 2>/dev/null | cut -f1 || echo "unknown")
         log_info "Target Type: Directory/Bundle"
         log_info "Target Size: $target_size"
-        
+
         # Check if it's an app bundle
         if [[ "$target" == *.app ]]; then
             log_info "App Bundle detected"
@@ -201,35 +329,35 @@ sign_target_enhanced() {
         log_info "Target Type: File"
         log_info "Target Size: $target_size"
     fi
-    
+
     # Pre-signing verification
     log_info "Pre-signing verification..."
     local pre_sign_status=$(codesign --verify --verbose "$target" 2>&1 || echo "Not signed or invalid signature")
     log_info "Pre-signing status: $pre_sign_status"
-    
+
     # Build signing command
     local sign_command="codesign --force --options runtime --timestamp --deep --sign \"$identity\""
     if [ -n "$entitlements" ] && [ -f "$entitlements" ]; then
         sign_command="$sign_command --entitlements \"$entitlements\""
     fi
     sign_command="$sign_command \"$target\""
-    
+
     log_command "$sign_command"
-    
+
     # Execute signing with retry
     if execute_with_retry "$sign_command" "Code Signing $(basename "$target")" "$RETRY_COUNT"; then
         # Post-signing verification
         log_info "Post-signing verification..."
         local post_sign_status=$(codesign --verify --verbose "$target" 2>&1 || echo "Verification failed")
         log_info "Post-signing status: $post_sign_status"
-        
+
         # Detailed signature information
         local signature_info=$(codesign --display --verbose=4 "$target" 2>&1 || echo "Could not get signature info")
         log_info "Signature details:"
         echo "$signature_info" | while read -r line; do
             log_info "  $line"
         done
-        
+
         log_success "Successfully signed: $(basename "$target")"
         log_security "Code Signing" "Successfully signed $target with identity: $identity"
         return 0
@@ -243,40 +371,40 @@ sign_target_enhanced() {
 # Function to notarize a target with enhanced logging
 notarize_target_enhanced() {
     local target="$1"
-    
+
     if [ "$SKIP_NOTARIZATION" = true ]; then
         log_info "Skipping notarization (--skip-notarize specified)"
         return 0
     fi
-    
+
     log_step "Notarizing Target: $(basename "$target")"
     log_security "Notarization" "Starting notarization process for $target"
     log_info "Target Path: $target"
-    
+
     # Check if notarytool is available
     if ! command -v xcrun >/dev/null 2>&1 || ! xcrun --find notarytool >/dev/null 2>&1; then
         log_warning "notarytool not available - skipping notarization"
         return 0
     fi
-    
+
     # Check for required environment variables
     if [ -z "${APPLE_ID:-}" ] || [ -z "${APPLE_ID_PASSWORD:-}" ] || [ -z "${APPLE_TEAM_ID:-}" ]; then
         log_warning "Apple ID credentials not configured - skipping notarization"
         log_info "Required: APPLE_ID, APPLE_ID_PASSWORD, APPLE_TEAM_ID"
         return 0
     fi
-    
+
     log_info "Apple ID: $APPLE_ID"
     log_info "Team ID: $APPLE_TEAM_ID"
-    
+
     # Create temporary zip for notarization if it's an app bundle
     local notarize_file="$target"
     local temp_zip=""
-    
+
     if [[ "$target" == *.app ]]; then
         temp_zip="/tmp/$(basename "$target" .app)-notarize-$(date +%s).zip"
         log_info "Creating temporary zip for notarization: $temp_zip"
-        
+
         if ditto -c -k --keepParent "$target" "$temp_zip"; then
             notarize_file="$temp_zip"
             log_success "Created notarization zip"
@@ -285,15 +413,15 @@ notarize_target_enhanced() {
             return 1
         fi
     fi
-    
+
     # Submit for notarization
     log_info "Submitting for notarization..."
     local notarize_command="xcrun notarytool submit \"$notarize_file\" --apple-id \"$APPLE_ID\" --password \"$APPLE_ID_PASSWORD\" --team-id \"$APPLE_TEAM_ID\" --wait"
-    
+
     if execute_with_retry "$notarize_command" "Notarization $(basename "$target")" "$RETRY_COUNT" 10 1800; then
         log_success "Notarization completed successfully"
         log_security "Notarization" "Successfully notarized $target"
-        
+
         # Staple the notarization (for app bundles)
         if [[ "$target" == *.app ]]; then
             log_info "Stapling notarization to app bundle..."
@@ -304,23 +432,23 @@ notarize_target_enhanced() {
                 log_warning "Failed to staple notarization (app may still work)"
             fi
         fi
-        
+
         # Clean up temporary zip
         if [ -n "$temp_zip" ] && [ -f "$temp_zip" ]; then
             rm -f "$temp_zip"
             log_info "Cleaned up temporary zip"
         fi
-        
+
         return 0
     else
         log_error "Notarization failed"
         log_security "Notarization" "Failed to notarize $target"
-        
+
         # Clean up temporary zip on failure
         if [ -n "$temp_zip" ] && [ -f "$temp_zip" ]; then
             rm -f "$temp_zip"
         fi
-        
+
         return 1
     fi
 }
@@ -328,40 +456,56 @@ notarize_target_enhanced() {
 # Main execution
 main() {
     local start_time=$(start_timer)
-    
+
     log_step "Starting Enhanced Signing Process"
-    
+
+    # Setup keychain from app configuration
+    log_step "Keychain Setup from Configuration"
+    if setup_keychain_from_config "apple_credentials/config/app_config.json" "build"; then
+        log_success "Keychain setup completed successfully"
+    else
+        log_warning "Keychain setup failed, proceeding with existing certificates"
+    fi
+
     # Get certificate information
     log_step "Certificate Discovery and Validation"
     list_signing_identities "Developer ID Application" || {
         log_error "No Developer ID Application certificates found"
         exit 1
     }
-    
+
     # Select signing identity
     local signing_identity
     signing_identity=$(select_signing_identity "Developer ID Application" "${APPLE_TEAM_ID:-}")
-    
+
     if [ -z "$signing_identity" ]; then
         log_error "No valid signing identity found"
         exit 1
     fi
-    
+
     log_info "Selected signing identity: $signing_identity"
-    
+
     # Validate certificate
     if ! validate_certificate "$signing_identity"; then
         log_error "Certificate validation failed"
         exit 1
     fi
-    
+
     # Find targets
-    local targets
-    if ! targets=($(find_and_process_targets)); then
+    local targets=()
+    local targets_output
+    if ! targets_output=$(find_and_process_targets); then
         log_error "No valid targets found"
         exit 1
     fi
-    
+
+    # Read targets into array, handling paths with spaces
+    while IFS= read -r target; do
+        if [ -n "$target" ]; then
+            targets+=("$target")
+        fi
+    done <<< "$targets_output"
+
     # Create entitlements file
     local entitlements_file="/tmp/enhanced-entitlements-$(date +%s).plist"
     cat > "$entitlements_file" << EOF
@@ -384,18 +528,18 @@ main() {
 </dict>
 </plist>
 EOF
-    
+
     log_info "Created entitlements file: $entitlements_file"
-    
+
     # Process each target
     local overall_success=true
     local processed_count=0
     local total_count=${#targets[@]}
-    
+
     for target in "${targets[@]}"; do
         processed_count=$((processed_count + 1))
         log_progress "$processed_count" "$total_count" "Processing $(basename "$target")"
-        
+
         # Sign the target
         if sign_target_enhanced "$target" "$signing_identity" "$entitlements_file"; then
             # Notarize the target
@@ -412,17 +556,20 @@ EOF
             overall_success=false
         fi
     done
-    
+
     # Cleanup
     if [ -f "$entitlements_file" ]; then
         rm -f "$entitlements_file"
         log_info "Cleaned up entitlements file"
     fi
-    
+
+    # Cleanup keychain if it was created
+    cleanup_keychain "build"
+
     # Final summary
     local duration=$(end_timer "$start_time" "Enhanced Signing Process")
     log_step "Enhanced Signing Summary"
-    
+
     if [ "$overall_success" = true ]; then
         log_success "All targets processed successfully!"
         create_summary_report "Enhanced Signing and Notarization" "SUCCESS" "Processed $total_count targets in ${duration}s"
