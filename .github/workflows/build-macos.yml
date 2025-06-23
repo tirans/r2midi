@@ -91,6 +91,12 @@ jobs:
         run: |
           chmod +x *.sh 2>/dev/null || true
           chmod +x .github/scripts/*.sh 2>/dev/null || true
+          chmod +x scripts/*.py 2>/dev/null || true
+          chmod +x scripts/*.sh 2>/dev/null || true
+          # Specifically ensure bulletproof cleaner is executable
+          [ -f scripts/bulletproof_clean_app_bundle.py ] && chmod +x scripts/bulletproof_clean_app_bundle.py || true
+          # Ensure emergency cleaner is executable
+          [ -f .github/scripts/emergency-clean-app.sh ] && chmod +x .github/scripts/emergency-clean-app.sh || true
 
       - name: Detect runner environment
         shell: bash
@@ -100,6 +106,22 @@ jobs:
             source .runner_environment
             echo "Runner type: IS_SELF_HOSTED=$IS_SELF_HOSTED"
           fi
+
+      - name: Verify cleaning scripts
+        shell: bash
+        run: |
+          echo "Checking for cleaning scripts..."
+          if [ -f scripts/bulletproof_clean_app_bundle.py ]; then
+            echo "✅ Found bulletproof_clean_app_bundle.py"
+            ls -la scripts/bulletproof_clean_app_bundle.py
+          else
+            echo "❌ bulletproof_clean_app_bundle.py not found!"
+            echo "Contents of scripts directory:"
+            ls -la scripts/ || echo "scripts directory not found"
+          fi
+          echo "Current directory: $(pwd)"
+          echo "Repository structure:"
+          ls -la
 
       - name: Clean environment
         shell: bash
@@ -116,6 +138,16 @@ jobs:
       - name: Test environments
         shell: bash
         run: ./test_environments.sh
+
+      - name: Test signing environment
+        shell: bash
+        run: |
+          chmod +x test-signing-environment.sh 2>/dev/null || true
+          if [ -f test-signing-environment.sh ]; then
+            ./test-signing-environment.sh
+          else
+            echo "Test script not found"
+          fi
 
       - name: Build applications
         shell: bash

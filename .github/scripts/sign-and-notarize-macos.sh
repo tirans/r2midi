@@ -203,11 +203,22 @@ sign_target_enhanced() {
             fi
         else
             # Try bulletproof clean first
-            local bulletproof_script="${SCRIPT_DIR}/../../scripts/bulletproof_clean_app_bundle.py"
-            local deep_clean_script="${SCRIPT_DIR}/../../scripts/deep_clean_app_bundle.py"
+            local repo_root="${SCRIPT_DIR}/../.."
+            local bulletproof_script="${repo_root}/scripts/bulletproof_clean_app_bundle.py"
+            
+            # Debug: Show where we're looking
+            log_info "Looking for bulletproof script at: $bulletproof_script"
+            log_info "Current directory: $(pwd)"
+            log_info "Script directory: $SCRIPT_DIR"
+            
+            # Also try relative to current directory
+            if [ ! -f "$bulletproof_script" ]; then
+                bulletproof_script="scripts/bulletproof_clean_app_bundle.py"
+                log_info "Trying relative path: $bulletproof_script"
+            fi
             
             if [ -f "$bulletproof_script" ]; then
-                log_info "Using bulletproof clean script: $bulletproof_script"
+                log_info "Found bulletproof clean script: $bulletproof_script"
                 
                 # Make script executable
                 chmod +x "$bulletproof_script"
@@ -223,9 +234,12 @@ sign_target_enhanced() {
                         log_error "All bulletproof clean methods failed"
                     fi
                 fi
-
             else
-                log_warning "Clean scripts not found, using standard cleanup"
+                log_warning "Bulletproof clean script not found!"
+                log_warning "Expected locations:"
+                log_warning "  - ${repo_root}/scripts/bulletproof_clean_app_bundle.py"
+                log_warning "  - scripts/bulletproof_clean_app_bundle.py"
+                log_warning "Using standard cleanup (less effective)"
                 
                 # Standard cleanup
                 log_info "Removing metadata files..."
@@ -233,8 +247,28 @@ sign_target_enhanced() {
                 find "$target" -name "__MACOSX" -type d -exec rm -rf {} + 2>/dev/null || true
                 find "$target" -name "._*" -delete 2>/dev/null || true
                 
-                log_info "Stripping extended attributes..."
+                log_info "Stripping extended attributes with xattr -rc..."
                 xattr -rc "$target" 2>/dev/null || true
+                
+                # Try harder - remove Python cache files that often have xattrs
+                log_info "Removing Python cache files..."
+                find "$target" -name "*.pyc" -delete 2>/dev/null || true
+                find "$target" -name "*.pyo" -delete 2>/dev/null || true
+                find "$target" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+                
+                # Try emergency shell script cleaner as last resort
+                local emergency_script="${SCRIPT_DIR}/emergency-clean-app.sh"
+                if [ -f "$emergency_script" ]; then
+                    log_info "Using emergency shell script cleaner..."
+                    chmod +x "$emergency_script"
+                    if "$emergency_script" "$target"; then
+                        log_success "Emergency cleaning completed"
+                    else
+                        log_warning "Emergency cleaning had issues"
+                    fi
+                else
+                    log_warning "No emergency cleaner available"
+                fi
             fi
         fi
         
