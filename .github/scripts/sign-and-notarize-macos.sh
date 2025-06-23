@@ -30,6 +30,12 @@ else
     exit 1
 fi
 
+if [ -f "$MODULES_DIR/deep-clean-utils.sh" ]; then
+    source "$MODULES_DIR/deep-clean-utils.sh"
+else
+    log_warning "deep-clean-utils.sh not found at $MODULES_DIR/deep-clean-utils.sh"
+fi
+
 # Default values
 VERSION=""
 BUILD_TYPE="production"
@@ -182,130 +188,65 @@ sign_target_enhanced() {
 
     # Clean up app bundle to remove resource forks and metadata
     if [[ "$target" == *.app ]]; then
-        log_info "Performing aggressive app bundle cleanup..."
-
-        # Step 1: Remove all metadata files and directories
-        log_info "Removing metadata files and directories..."
-        find "$target" -name ".DS_Store" -delete 2>/dev/null || true
-        find "$target" -name "__MACOSX" -type d -exec rm -rf {} + 2>/dev/null || true
-        find "$target" -name "._*" -delete 2>/dev/null || true
-        find "$target" -name ".fseventsd" -type d -exec rm -rf {} + 2>/dev/null || true
-        find "$target" -name ".Spotlight-V100" -type d -exec rm -rf {} + 2>/dev/null || true
-        find "$target" -name ".Trashes" -type d -exec rm -rf {} + 2>/dev/null || true
-        find "$target" -name ".TemporaryItems" -type d -exec rm -rf {} + 2>/dev/null || true
-
-        # Step 2: Aggressively strip all extended attributes and resource forks
-        log_info "Stripping extended attributes and resource forks..."
-
-        # Use xattr -cr to recursively clear all extended attributes
-        xattr -cr "$target" 2>/dev/null || true
-
-        # Additional cleanup for specific problematic files
-        find "$target" -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.framework" \) -exec xattr -c {} \; 2>/dev/null || true
-
-        # Step 3: Special handling for Python.framework
-        local python_framework="$target/Contents/Frameworks/Python.framework"
-        if [ -d "$python_framework" ]; then
-            log_info "Special cleanup for Python.framework..."
-
-            # Remove all extended attributes from Python.framework recursively
-            xattr -cr "$python_framework" 2>/dev/null || true
-
-            # Remove any resource forks specifically from Python.framework
-            find "$python_framework" -name "._*" -delete 2>/dev/null || true
-
-            # Clean up any .DS_Store files in the framework
-            find "$python_framework" -name ".DS_Store" -delete 2>/dev/null || true
-
-            log_info "Python.framework cleanup completed"
-        fi
-
-        # Step 4: Rebuild app bundle from scratch without extended attributes
-        log_info "Rebuilding app bundle from scratch without extended attributes..."
-        local temp_app="/tmp/$(basename "$target")-rebuilt-$(date +%s)"
-
-        # Create the basic app bundle structure
-        mkdir -p "$temp_app/Contents/MacOS"
-        mkdir -p "$temp_app/Contents/Resources"
-        mkdir -p "$temp_app/Contents/Frameworks"
-
-        # Copy files using rsync to avoid extended attributes
-        if command -v rsync >/dev/null 2>&1; then
-            log_info "Using rsync to copy files without extended attributes..."
-
-            # Copy with rsync, excluding extended attributes and resource forks
-            if rsync -av --no-extended-attributes --no-specials --no-devices \
-                     --exclude="._*" --exclude=".DS_Store" --exclude="__MACOSX" \
-                     "$target/" "$temp_app/" 2>/dev/null; then
-                log_success "Successfully copied app bundle with rsync"
+        log_info "Performing deep clean of app bundle..."
+        
+        # Use deep_clean_app_bundle function if available
+        if type -t deep_clean_app_bundle >/dev/null 2>&1; then
+            if deep_clean_app_bundle "$target"; then
+                log_success "App bundle cleaned successfully"
             else
-                log_warning "rsync failed, falling back to manual copy"
-
-                # Manual copy as fallback
-                cp -R "$target/Contents" "$temp_app/" 2>/dev/null || true
+                log_warning "Deep clean function failed, using fallback cleanup"
+                # Basic fallback cleanup
+                find "$target" -name ".DS_Store" -delete 2>/dev/null || true
+                find "$target" -name "._*" -delete 2>/dev/null || true
+                xattr -rc "$target" 2>/dev/null || true
             fi
         else
-            log_info "rsync not available, using manual copy method..."
-
-            # Manual copy method
-            cp -R "$target/Contents" "$temp_app/" 2>/dev/null || true
-        fi
-
-        # Ensure no extended attributes on the rebuilt bundle
-        log_info "Stripping all extended attributes from rebuilt bundle..."
-        find "$temp_app" -exec xattr -c {} \; 2>/dev/null || true
-
-        # Verify the rebuilt copy is clean
-        local rebuilt_xattr_count=$(find "$temp_app" -exec xattr -l {} \; 2>/dev/null | wc -l || echo "0")
-        log_info "Extended attributes in rebuilt copy: $rebuilt_xattr_count"
-
-        if [ "$rebuilt_xattr_count" -eq 0 ]; then
-            log_success "Successfully created clean rebuilt app bundle"
-            rm -rf "$target"
-            mv "$temp_app" "$target"
-            log_success "Replaced original with rebuilt clean copy"
-        else
-            log_warning "Rebuilt copy still has extended attributes, trying nuclear option..."
-
-            # Nuclear option: Use tar to completely strip everything
-            local tar_temp="/tmp/$(basename "$target")-tar-$(date +%s).tar"
-
-            if tar -cf "$tar_temp" -C "$(dirname "$target")" "$(basename "$target")" 2>/dev/null; then
-                rm -rf "$target"
-                tar -xf "$tar_temp" -C "$(dirname "$target")" 2>/dev/null
-                rm -f "$tar_temp"
-
-                # Final cleanup
-                find "$target" -exec xattr -c {} \; 2>/dev/null || true
-
-                local final_tar_count=$(find "$target" -exec xattr -l {} \; 2>/dev/null | wc -l || echo "0")
-                log_info "Extended attributes after tar method: $final_tar_count"
-
-                if [ "$final_tar_count" -eq 0 ]; then
-                    log_success "Nuclear tar method succeeded"
+            # Try bulletproof clean first
+            local bulletproof_script="${SCRIPT_DIR}/../../scripts/bulletproof_clean_app_bundle.py"
+            local deep_clean_script="${SCRIPT_DIR}/../../scripts/deep_clean_app_bundle.py"
+            
+            if [ -f "$bulletproof_script" ]; then
+                log_info "Using bulletproof clean script: $bulletproof_script"
+                
+                # Make script executable
+                chmod +x "$bulletproof_script"
+                
+                # Run bulletproof clean with ditto method first
+                if python3 "$bulletproof_script" --method ditto "$target"; then
+                    log_success "Bulletproof clean completed successfully"
                 else
-                    log_warning "Even nuclear method failed, proceeding anyway"
+                    log_warning "Bulletproof clean failed, trying auto method"
+                    if python3 "$bulletproof_script" --method auto "$target"; then
+                        log_success "Bulletproof clean succeeded with auto method"
+                    else
+                        log_error "All bulletproof clean methods failed"
+                    fi
                 fi
+
             else
-                log_warning "Tar method failed, using rebuilt copy anyway"
-                rm -rf "$target"
-                mv "$temp_app" "$target"
+                log_warning "Clean scripts not found, using standard cleanup"
+                
+                # Standard cleanup
+                log_info "Removing metadata files..."
+                find "$target" -name ".DS_Store" -delete 2>/dev/null || true
+                find "$target" -name "__MACOSX" -type d -exec rm -rf {} + 2>/dev/null || true
+                find "$target" -name "._*" -delete 2>/dev/null || true
+                
+                log_info "Stripping extended attributes..."
+                xattr -rc "$target" 2>/dev/null || true
             fi
         fi
-
-        # Step 5: Final verification
-        log_info "Performing final cleanup verification..."
+        
+        # Verify cleanup
         local final_xattr_count=$(find "$target" -exec xattr -l {} \; 2>/dev/null | wc -l || echo "0")
         log_info "Final extended attributes count: $final_xattr_count"
-
-        # One more aggressive cleanup if needed
+        
         if [ "$final_xattr_count" -gt 0 ]; then
-            log_info "Performing final aggressive cleanup..."
-            xattr -cr "$target" 2>/dev/null || true
-            find "$target" -type f -exec xattr -c {} \; 2>/dev/null || true
+            log_warning "Some extended attributes remain after cleanup"
+        else
+            log_success "App bundle is clean"
         fi
-
-        log_success "Aggressive app bundle cleanup completed"
     fi
 
     # Get target information
