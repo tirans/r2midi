@@ -16,7 +16,8 @@ source "$SOURCE_DIR/scripts/common-certificate-setup.sh"
 VERSION=""
 SKIP_SIGNING=false
 SKIP_NOTARIZATION=false
-BUILD_TYPE="local"
+BUILD_TYPE="production"  # Changed from "local" to "production"
+NO_PKG=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -33,16 +34,26 @@ while [[ $# -gt 0 ]]; do
             SKIP_NOTARIZATION=true
             shift
             ;;
+        --no-pkg)
+            NO_PKG=true
+            shift
+            ;;
+        --build-type)
+            BUILD_TYPE="$2"
+            shift 2
+            ;;
         --dev)
             BUILD_TYPE="dev"
             shift
             ;;
         *)
-            echo "Usage: $0 [--version VERSION] [--no-sign] [--no-notarize] [--dev]"
+            echo "Usage: $0 [--version VERSION] [--no-sign] [--no-notarize] [--no-pkg] [--build-type TYPE] [--dev]"
             echo "  --version VERSION   Specify version (otherwise extracted from code)"
             echo "  --no-sign          Skip code signing"
             echo "  --no-notarize      Skip notarization"
-            echo "  --dev              Development build (skip some optimizations)"
+            echo "  --no-pkg           Skip PKG creation (build app only)"
+            echo "  --build-type TYPE  Build type: dev, staging, production (default: production)"
+            echo "  --dev              Development build (same as --build-type dev)"
             exit 1
             ;;
     esac
@@ -52,6 +63,7 @@ echo "🎨 Building R2MIDI Client locally..."
 echo "Build type: $BUILD_TYPE"
 echo "Skip signing: $SKIP_SIGNING"
 echo "Skip notarization: $SKIP_NOTARIZATION"
+echo "Skip PKG creation: $NO_PKG"
 echo ""
 
 # Clean environment and recreate virtual environments at the beginning
@@ -226,198 +238,47 @@ fi
 # Setup certificates before signing
 setup_certificates "$SKIP_SIGNING"
 
-# Code signing and notarization (if not skipped and certificates available)
-if [ "$SKIP_SIGNING" = "false" ] && [ "$CERT_LOADED" = "true" ]; then
+# Create PKG installer using macOS-Pkg-Builder if not skipped
+if [ "$NO_PKG" = "false" ]; then
     echo ""
-    echo "🔐 Starting signing and notarization..."
+    echo "📦 Creating PKG installer using macOS-Pkg-Builder..."
     
-    # Use clean-app.sh before signing if available
-    echo "🧹 Pre-signing app cleaning..."
-    if [ -f "../.github/scripts/clean-app.sh" ]; then
-        echo "📝 Using clean-app.sh for thorough cleaning..."
-        if "../.github/scripts/clean-app.sh" "$APP_PATH"; then
-            echo "✅ App bundle cleaned with clean-app.sh"
-        else
-            echo "⚠️ clean-app.sh failed, using fallback cleaning"
-            # Fallback cleaning
-            find "$APP_PATH" -name ".DS_Store" -delete 2>/dev/null || true
-            find "$APP_PATH" -name "._*" -delete 2>/dev/null || true
-            xattr -rc "$APP_PATH" 2>/dev/null || true
-        fi
-    else
-        echo "⚠️ clean-app.sh not found, using basic cleaning"
-        # Basic cleaning
-        find "$APP_PATH" -name ".DS_Store" -delete 2>/dev/null || true
-        find "$APP_PATH" -name "._*" -delete 2>/dev/null || true
-        xattr -rc "$APP_PATH" 2>/dev/null || true
+    # Go back to project root
+    cd ..
+    
+    # Use the new PKG builder script
+    PKG_NAME="R2MIDI-Client-${VERSION}"
+    PKG_ARGS="--app-path 'build_client/$APP_PATH' --pkg-name '$PKG_NAME' --version '$VERSION' --build-type '$BUILD_TYPE'"
+    
+    if [ "$SKIP_NOTARIZATION" = "true" ]; then
+        PKG_ARGS="$PKG_ARGS --skip-notarize"
     fi
-
-    # Check if signing script exists (preferred)
-    if [ -f "../.github/scripts/sign-and-notarize.sh" ]; then
-        echo "📝 Using signing script"
-        
-        # Build arguments for signing script
-        sign_args="--version $VERSION"
-        
-        if [ "$BUILD_TYPE" = "dev" ]; then
-            sign_args="$sign_args --dev"
-        fi
-        
-        if [ "$SKIP_NOTARIZATION" = "true" ]; then
-            sign_args="$sign_args --skip-notarize"
-        fi
-        
-        # Run signing from project root
-        cd ..
-        if ./.github/scripts/sign-and-notarize.sh $sign_args; then
-            echo "✅ Signing and notarization completed"
-        else
-            echo "❌ Signing failed"
-            if [ "$BUILD_TYPE" != "dev" ]; then
-                cleanup_certificates
-                exit 1
-            fi
-        fi
-        cd build_client
-    elif [ -f "../.github/scripts/sign-notarize.sh" ]; then
-        echo "📋 Using signing script"
-
-        # Build arguments for signing script
-        sign_args="--version $VERSION"
-
-        if [ "$BUILD_TYPE" = "dev" ]; then
-            sign_args="$sign_args --dev"
-        fi
-
-        if [ "$SKIP_NOTARIZATION" = "true" ]; then
-            sign_args="$sign_args --skip-notarize"
-        fi
-
-        # Run signing from project root
-        cd ..
-        if ./.github/scripts/sign-notarize.sh $sign_args; then
-            echo "✅ Signing and notarization completed"
-        else
-            echo "⚠️ Signing failed, trying development build approach..."
-            # Fallback: try with dev flag to skip strict notarization
-            if ./.github/scripts/sign-notarize.sh $sign_args --dev; then
-                echo "✅ Development signing completed (some steps may have been skipped)"
-            else
-                echo "❌ Signing failed completely"
-                if [ "$BUILD_TYPE" != "dev" ]; then
-                    cleanup_certificates
-                    exit 1
-                fi
-            fi
-        fi
-        cd build_client
+    
+    echo "🔨 Building PKG with: python3 ./scripts/build-pkg-with-macos-builder.py $PKG_ARGS"
+    
+    if python3 ./scripts/build-pkg-with-macos-builder.py --app-path "build_client/$APP_PATH" --pkg-name "$PKG_NAME" --version "$VERSION" --build-type "$BUILD_TYPE" $([ "$SKIP_NOTARIZATION" = "true" ] && echo "--skip-notarize"); then
+        echo "✅ PKG created successfully: artifacts/${PKG_NAME}.pkg"
+        PKG_CREATED=true
+        PKG_FILE="${PKG_NAME}.pkg"
     else
-        echo "⚠️ Signing script not found, using basic signing"
-
-        # Use certificate identity from common setup
-        if [ -n "$CERT_IDENTITY" ]; then
-            echo "✅ Using signing identity: $CERT_IDENTITY"
-
-            # Create basic entitlements for client
-            cat > entitlements.plist << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>com.apple.security.cs.allow-jit</key>
-    <true/>
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
-    <key>com.apple.security.network.client</key>
-    <true/>
-    <key>com.apple.security.files.user-selected.read-write</key>
-    <true/>
-</dict>
-</plist>
-EOF
-
-            codesign --force --options runtime --entitlements entitlements.plist --deep --sign "$CERT_IDENTITY" "$APP_PATH"
-
-            # Create PKG installer
-            PKG_NAME="R2MIDI-Client-${VERSION}.pkg"
-            INSTALLER_PATH="artifacts/${PKG_NAME}"
-
-            pkgbuild --identifier "com.r2midi.client" \
-                     --version "$VERSION" \
-                     --install-location "/Applications" \
-                     --component "dist/R2MIDI Client.app" \
-                     "$INSTALLER_PATH"
-
-            # Sign and notarize the PKG
-            echo "🔐 Signing and notarizing PKG..."
-            if [ -f "../.github/scripts/sign-pkg.sh" ]; then
-                if "../.github/scripts/sign-pkg.sh" --pkg "$INSTALLER_PATH"; then
-                    echo "✅ PKG signed and notarized successfully"
-                else
-                    echo "⚠️ PKG signing/notarization failed, but continuing..."
-                fi
-            else
-                echo "⚠️ PKG signing script not found, skipping PKG signing"
-            fi
-
-            echo "✅ Basic signing completed"
-        else
-            echo "⚠️ No valid certificate loaded - creating unsigned build"
-
-            # Create PKG installer even without signing
-            PKG_NAME="R2MIDI-Client-${VERSION}.pkg"
-            INSTALLER_PATH="artifacts/${PKG_NAME}"
-
-            pkgbuild --identifier "com.r2midi.client" \
-                     --version "$VERSION" \
-                     --install-location "/Applications" \
-                     --component "dist/R2MIDI Client.app" \
-                     "$INSTALLER_PATH"
-
-            # Sign and notarize the PKG (even for unsigned app builds, we can still sign the PKG)
-            echo "🔐 Signing and notarizing PKG..."
-            if [ -f "../.github/scripts/sign-pkg.sh" ]; then
-                if "../.github/scripts/sign-pkg.sh" --pkg "$INSTALLER_PATH"; then
-                    echo "✅ PKG signed and notarized successfully"
-                else
-                    echo "⚠️ PKG signing/notarization failed, but continuing..."
-                fi
-            else
-                echo "⚠️ PKG signing script not found, skipping PKG signing"
-            fi
+        echo "❌ PKG creation failed"
+        PKG_CREATED=false
+        PKG_FILE=""
+        # Exit with error if production build fails
+        if [ "$BUILD_TYPE" = "production" ]; then
+            echo "❌ Production build failed during PKG creation"
+            deactivate
+            cleanup_certificates
+            exit 1
         fi
     fi
+    
+    # Go back to build directory
+    cd build_client
 else
-    if [ "$SKIP_SIGNING" = "true" ]; then
-        echo "⏭️ Skipping code signing (--no-sign specified)"
-    else
-        echo "⚠️ No valid certificates available - creating unsigned build"
-    fi
-
-    # Create unsigned PKG
-    echo "📦 Creating unsigned PKG installer..."
-    PKG_NAME="R2MIDI-Client-${VERSION}.pkg"
-    INSTALLER_PATH="artifacts/${PKG_NAME}"
-
-    pkgbuild --identifier "com.r2midi.client" \
-             --version "$VERSION" \
-             --install-location "/Applications" \
-             --component "dist/R2MIDI Client.app" \
-             "$INSTALLER_PATH"
-
-    # Sign and notarize the PKG (even for unsigned app builds, we can still sign the PKG)
-    echo "🔐 Signing and notarizing PKG..."
-    if [ -f "../.github/scripts/sign-pkg.sh" ]; then
-        if "../.github/scripts/sign-pkg.sh" --pkg "$INSTALLER_PATH"; then
-            echo "✅ PKG signed and notarized successfully"
-        else
-            echo "⚠️ PKG signing/notarization failed, but continuing..."
-        fi
-    else
-        echo "⚠️ PKG signing script not found, skipping PKG signing"
-    fi
+    echo "⏭️ Skipping PKG creation (--no-pkg specified)"
+    PKG_CREATED=false
+    PKG_FILE=""
 fi
 
 # Copy artifacts to main artifacts directory
@@ -425,7 +286,11 @@ echo ""
 echo "📋 Copying artifacts..."
 
 cd ..  # Back to project root
-cp "build_client/artifacts/${PKG_NAME}" "artifacts/"
+
+# Copy PKG if it was created
+if [ "$PKG_CREATED" = "true" ] && [ -f "artifacts/$PKG_FILE" ]; then
+    echo "✅ PKG artifact already in place: artifacts/$PKG_FILE"
+fi
 
 # Create build report
 BUILD_REPORT="artifacts/CLIENT_BUILD_REPORT_${VERSION}.md"
@@ -441,9 +306,9 @@ cat > "$BUILD_REPORT" << EOF
 ## Build Results
 
 - ✅ App Bundle: R2MIDI Client.app
-- ✅ PKG Installer: ${PKG_NAME}
+$([ "$PKG_CREATED" = "true" ] && echo "- ✅ PKG Installer: $PKG_FILE" || echo "- ⏭️ PKG creation skipped")
 - App Size: $(du -sh "build_client/$APP_PATH" 2>/dev/null | cut -f1 || echo "unknown")
-- PKG Size: $(du -sh "artifacts/${PKG_NAME}" 2>/dev/null | cut -f1 || echo "unknown")
+$([ "$PKG_CREATED" = "true" ] && echo "- PKG Size: $(du -sh "artifacts/$PKG_FILE" 2>/dev/null | cut -f1 || echo "unknown")")
 
 ## Build Configuration
 
@@ -452,6 +317,7 @@ cat > "$BUILD_REPORT" << EOF
 - py2app Options: Optimized configuration with duplicate file prevention
 - Code Signing: $([ "$SKIP_SIGNING" = "false" ] && echo "Enabled" || echo "Disabled")
 - Notarization: $([ "$SKIP_NOTARIZATION" = "false" ] && echo "Enabled" || echo "Disabled")
+- PKG Creation: $([ "$PKG_CREATED" = "true" ] && echo "Enabled" || echo "Disabled")
 
 ## Package Dependencies
 
@@ -459,12 +325,21 @@ $(pip list | grep -E "(PyQt6|httpx|pydantic|py2app)" || echo "Dependencies not l
 
 ## Installation
 
+$([ "$PKG_CREATED" = "true" ] && cat << INSTALL_EOF
 To install the client:
 \`\`\`bash
-sudo installer -pkg artifacts/${PKG_NAME} -target /
+sudo installer -pkg artifacts/$PKG_FILE -target /
 \`\`\`
 
 The app will be installed to: /Applications/R2MIDI Client.app
+INSTALL_EOF
+|| cat << NO_PKG_EOF
+To install the app manually:
+\`\`\`bash
+cp -R "build_client/$APP_PATH" "/Applications/"
+\`\`\`
+NO_PKG_EOF
+)
 EOF
 
 echo "📄 Build report created: $BUILD_REPORT"
@@ -479,7 +354,7 @@ cleanup_certificates
 print_build_summary "R2MIDI Client" "success" "
 📦 Build artifacts:
   - App bundle: build_client/$APP_PATH
-  - PKG installer: artifacts/${PKG_NAME}
+$([ "$PKG_CREATED" = "true" ] && echo "  - PKG installer: artifacts/$PKG_FILE")
   - Build report: $BUILD_REPORT
 
 🚀 Ready for distribution!"
@@ -488,7 +363,12 @@ print_build_summary "R2MIDI Client" "success" "
 echo ""
 echo "📋 Next steps:"
 echo "  1. Test the app: open 'build_client/$APP_PATH'"
-echo "  2. Test installer: sudo installer -pkg 'artifacts/${PKG_NAME}' -target /"
-echo "  3. Build server: ./build-server-local.sh"
-echo ""
-echo "💡 The PKG installer will install the app to /Applications/"
+if [ "$PKG_CREATED" = "true" ]; then
+    echo "  2. Test installer: sudo installer -pkg 'artifacts/$PKG_FILE' -target /"
+    echo "  3. Build server: ./build-server-local.sh"
+    echo ""
+    echo "💡 The PKG installer will install the app to /Applications/"
+else
+    echo "  2. Install manually: cp -R 'build_client/$APP_PATH' '/Applications/'"
+    echo "  3. Build server: ./build-server-local.sh"
+fi

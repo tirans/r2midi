@@ -1,0 +1,225 @@
+name: Build macOS with macOS-Pkg-Builder
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      build-type:
+        description: 'Build type'
+        required: false
+        type: choice
+        options: [dev, staging, production]
+        default: 'production'
+      version:
+        description: 'Version to build'
+        required: false
+        type: string
+        default: '1.0.0'
+      runner-type:
+        description: 'Runner type to use'
+        required: false
+        type: choice
+        options: [macos-latest, self-hosted]
+        default: 'macos-latest'
+
+jobs:
+  build-macos:
+    name: 🍎 macOS Build with PKG Builder
+    runs-on: ${{ github.event.inputs.runner-type || 'macos-latest' }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check runner environment
+        run: |
+          echo "🔍 Checking runner environment..."
+          chmod +x scripts/check-runner-environment.sh
+          ./scripts/check-runner-environment.sh
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        if: ${{ !contains(github.event.inputs.runner-type, 'self-hosted') }}
+        with:
+          python-version: '3.12'
+
+      - name: Setup Python (self-hosted)
+        if: contains(github.event.inputs.runner-type, 'self-hosted')
+        run: |
+          echo "🐍 Checking Python on self-hosted runner..."
+          python3 --version
+          pip3 --version
+          # Ensure pip is up to date
+          python3 -m pip install --upgrade pip
+
+      - name: Clean environment
+        run: |
+          echo "🧹 Cleaning build environment..."
+          rm -rf build_client build_server artifacts dist build
+          rm -rf venv_client venv_server
+          find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+          find . -name "*.pyc" -delete 2>/dev/null || true
+
+      - name: Setup virtual environments
+        run: |
+          if [ -f "./setup-virtual-environments.sh" ]; then
+            ./setup-virtual-environments.sh --use-uv
+          else
+            echo "Setting up virtual environments manually..."
+            python3 -m venv venv_server
+            python3 -m venv venv_client
+            
+            # Install server dependencies
+            source venv_server/bin/activate
+            pip install --upgrade pip
+            pip install briefcase
+            pip install -r requirements.txt
+            deactivate
+            
+            # Install client dependencies  
+            source venv_client/bin/activate
+            pip install --upgrade pip
+            pip install briefcase
+            pip install -r requirements.txt
+            deactivate
+          fi
+
+      - name: Install macOS-Pkg-Builder
+        run: |
+          echo "📦 Installing macOS-Pkg-Builder..."
+          pip3 install macos-pkg-builder
+          echo "✅ macOS-Pkg-Builder installed"
+          macos-pkg-builder --version || echo "Version check failed"
+
+      - name: Build applications
+        run: |
+          VERSION="${{ github.event.inputs.version || '1.0.0' }}"
+          BUILD_TYPE="${{ github.event.inputs.build-type || 'production' }}"
+          
+          # Build server (without PKG)
+          if [ -f "./build-server-local.sh" ]; then
+            ./build-server-local.sh --version "$VERSION" --no-pkg
+          else
+            echo "Building server with briefcase..."
+            source venv_server/bin/activate
+            briefcase build macos app -a server
+            briefcase package macos app -a server --no-sign
+            deactivate
+          fi
+          
+          # Build client (without PKG)
+          if [ -f "./build-client-local.sh" ]; then
+            ./build-client-local.sh --version "$VERSION" --no-pkg
+          else
+            echo "Building client with briefcase..."
+            source venv_client/bin/activate
+            briefcase build macos app -a r2midi-client
+            briefcase package macos app -a r2midi-client --no-sign
+            deactivate
+          fi
+
+      - name: Build and sign PKGs with macOS-Pkg-Builder
+        env:
+          APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GITHUB_ACTIONS: true
+        run: |
+          VERSION="${{ github.event.inputs.version || '1.0.0' }}"
+          BUILD_TYPE="${{ github.event.inputs.build-type || 'production' }}"
+          
+          # Make scripts executable
+          chmod +x scripts/build-pkg-with-macos-builder.sh
+          
+          # Find the built applications
+          SERVER_APP=""
+          CLIENT_APP=""
+          
+          # Look for server app in common locations
+          if [ -d "build/server/macos/app/R2MIDI Server.app" ]; then
+            SERVER_APP="build/server/macos/app/R2MIDI Server.app"
+          elif [ -d "build_server/dist/R2MIDI Server.app" ]; then
+            SERVER_APP="build_server/dist/R2MIDI Server.app"
+          else
+            echo "❌ Server app not found"
+            find . -name "*.app" -type d | head -10
+            exit 1
+          fi
+          
+          # Look for client app in common locations  
+          if [ -d "build/r2midi-client/macos/app/R2MIDI Client.app" ]; then
+            CLIENT_APP="build/r2midi-client/macos/app/R2MIDI Client.app"
+          elif [ -d "build_client/dist/R2MIDI Client.app" ]; then
+            CLIENT_APP="build_client/dist/R2MIDI Client.app"
+          else
+            echo "❌ Client app not found"
+            find . -name "*.app" -type d | head -10
+            exit 1
+          fi
+          
+          echo "📱 Found server app: $SERVER_APP"
+          echo "📱 Found client app: $CLIENT_APP"
+          
+          # Build server PKG
+          echo "🔨 Building server PKG..."
+          ./scripts/build-pkg-with-macos-builder.sh \
+            --app-path "$SERVER_APP" \
+            --pkg-name "R2MIDI-Server-$VERSION" \
+            --version "$VERSION" \
+            --build-type "$BUILD_TYPE"
+          
+          # Build client PKG
+          echo "🔨 Building client PKG..."
+          ./scripts/build-pkg-with-macos-builder.sh \
+            --app-path "$CLIENT_APP" \
+            --pkg-name "R2MIDI-Client-$VERSION" \
+            --version "$VERSION" \
+            --build-type "$BUILD_TYPE"
+
+      - name: Verify build artifacts
+        run: |
+          echo "📦 Build artifacts:"
+          if [ -d "artifacts" ]; then
+            find artifacts -name "*.pkg" | while read pkg; do
+              if [ -f "$pkg" ]; then
+                size=$(du -sh "$pkg" | cut -f1)
+                echo "  ✅ $(basename "$pkg") ($size)"
+                
+                # Check if signed
+                if pkgutil --check-signature "$pkg" >/dev/null 2>&1; then
+                  echo "     🔒 Signed"
+                else
+                  echo "     ⚠️  Unsigned"
+                fi
+              fi
+            done
+          else
+            echo "  ❌ No artifacts directory found"
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-pkgs-${{ github.run_number }}
+          path: artifacts/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "🧹 Cleaning up..."
+          # Clean up build artifacts
+          rm -rf build_client build_server
+          # Clean up any temporary files
+          rm -rf /tmp/macos-pkg-builder-*
+          rm -rf /tmp/github_certs
