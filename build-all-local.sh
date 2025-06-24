@@ -3,6 +3,12 @@ set -euo pipefail
 # build-all-local.sh - R2MIDI build system with proper signing
 # Usage: ./build-all-local.sh [options]
 
+# Make this script and related scripts executable
+chmod +x "$0" 2>/dev/null || true
+chmod +x build-server-local.sh 2>/dev/null || true
+chmod +x build-client-local.sh 2>/dev/null || true
+chmod +x scripts/keychain-free-build.sh 2>/dev/null || true
+
 # Source common certificate setup
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SOURCE_DIR/scripts/common-certificate-setup.sh" ]; then
@@ -54,19 +60,31 @@ Usage: $0 [options]
 
 Options:
   --version VERSION    Specify version (auto-detected if not provided)
-  --dev               Development build (faster, less verification)
+  --dev               Development build (faster, unsigned, no notarization)
   --staging           Staging build (production-like with full verification)
-  --no-sign           Skip code signing
-  --no-notarize       Skip notarization
+  --no-sign           Skip code signing (not recommended for distribution)
+  --no-notarize       Skip notarization (not recommended for distribution)
   --clean             Clean previous builds first
   --help              Show this help
 
+Default Behavior:
+  By default, builds are PRODUCTION builds with:
+  - Signed .app bundles and .pkg installers
+  - Notarized packages for distribution
+  - Full verification and validation
+
 Examples:
-  $0                                  # Build everything with auto-detected version
-  $0 --version 1.2.3                # Build with specific version
-  $0 --dev --no-notarize            # Fast development build
+  $0                                  # Production build (signed, notarized)
+  $0 --version 1.2.3                # Production build with specific version
+  $0 --dev                          # Development build (unsigned, faster)
   $0 --staging --version 1.2.3      # Staging build with full verification
-  $0 --clean                        # Clean build
+  $0 --clean                        # Clean production build
+
+Build Process:
+  1. Uses build-server-local.sh for R2MIDI Server
+  2. Uses build-client-local.sh for R2MIDI Client
+  3. Both scripts use scripts/keychain-free-build.sh for PKG creation
+  4. Creates signed, notarized .pkg installers by default
 
 Supports both local development and GitHub Actions environments.
 EOF
@@ -678,16 +696,24 @@ build_component() {
     if [ "$BUILD_TYPE" = "dev" ]; then
         build_args="$build_args --dev"
         log_info "Added development build flag"
+    else
+        # For production/staging builds, explicitly set build type
+        build_args="$build_args --build-type $BUILD_TYPE"
+        log_info "Set build type: $BUILD_TYPE"
     fi
 
     if [ "$SKIP_SIGNING" = true ]; then
         build_args="$build_args --no-sign"
         log_info "Added skip signing flag"
+    else
+        log_info "Code signing enabled (production default)"
     fi
 
     if [ "$SKIP_NOTARIZATION" = true ]; then
         build_args="$build_args --no-notarize"
         log_info "Added skip notarization flag"
+    else
+        log_info "Notarization enabled (production default)"
     fi
 
     log_info "Final build command: ./$script_name $build_args"
@@ -928,9 +954,14 @@ main() {
     local overall_start_time=$(start_timer)
 
     log_step "Starting R2MIDI Build System"
+    log_info "Build Strategy:"
+    log_info "  🔧 Server: build-server-local.sh -> scripts/keychain-free-build.sh"
+    log_info "  🎨 Client: build-client-local.sh -> scripts/keychain-free-build.sh"
+    log_info "  📦 Creates signed, notarized .pkg installers by default"
+    log_info ""
     log_info "Build configuration:"
     log_info "  Version: $VERSION"
-    log_info "  Build Type: $BUILD_TYPE"
+    log_info "  Build Type: $BUILD_TYPE ($([ "$BUILD_TYPE" = "production" ] && echo "signed, notarized" || echo "see flags below"))"
     log_info "  Skip Signing: $SKIP_SIGNING"
     log_info "  Skip Notarization: $SKIP_NOTARIZATION"
     log_info "  Clean Build: $CLEAN_BUILD"

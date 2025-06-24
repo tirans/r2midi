@@ -120,8 +120,10 @@ create_unsigned_pkg() {
     log_info "  Output: $output_pkg"
     
     # Use pkgbuild to create unsigned package
+    # Convert pkg_name to lowercase for identifier
+    local pkg_name_lower=$(echo "$pkg_name" | tr '[:upper:]' '[:lower:]')
     if pkgbuild \
-        --identifier "com.r2midi.${pkg_name,,}" \
+        --identifier "com.r2midi.${pkg_name_lower}" \
         --version "$version" \
         --install-location "/Applications" \
         --component "$app_path" \
@@ -157,8 +159,10 @@ create_signed_pkg() {
     
     # First create unsigned package
     log_info "Creating unsigned package first..."
+    # Convert pkg_name to lowercase for identifier
+    local pkg_name_lower=$(echo "$pkg_name" | tr '[:upper:]' '[:lower:]')
     if ! pkgbuild \
-        --identifier "com.r2midi.${pkg_name,,}" \
+        --identifier "com.r2midi.${pkg_name_lower}" \
         --version "$version" \
         --install-location "/Applications" \
         --component "$app_path" \

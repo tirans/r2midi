@@ -5,8 +5,9 @@
 
 set -euo pipefail
 
-# Make the common certificate setup script executable
+# Make the common certificate setup script and keychain-free-build script executable
 chmod +x scripts/common-certificate-setup.sh 2>/dev/null || true
+chmod +x scripts/keychain-free-build.sh 2>/dev/null || true
 
 # Source common certificate setup
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

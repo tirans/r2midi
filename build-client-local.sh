@@ -5,8 +5,9 @@
 
 set -euo pipefail
 
-# Make the common certificate setup script executable
+# Make the common certificate setup script and keychain-free-build script executable
 chmod +x scripts/common-certificate-setup.sh 2>/dev/null || true
+chmod +x scripts/keychain-free-build.sh 2>/dev/null || true
 
 # Source common certificate setup
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -254,9 +255,13 @@ if [ "$NO_PKG" = "false" ]; then
         PKG_ARGS="$PKG_ARGS --skip-notarize"
     fi
     
-    echo "🔨 Building PKG with: python3 ./scripts/build-pkg-with-macos-builder.py $PKG_ARGS"
+    # Use the new PKG builder script for consistency with server
+    OUTPUT_DIR="artifacts"
+    PKG_ARGS="--app-path 'build_client/$APP_PATH' --pkg-name '$PKG_NAME' --version '$VERSION' --build-type '$BUILD_TYPE' --output-dir '$OUTPUT_DIR'"
     
-    if python3 ./scripts/build-pkg-with-macos-builder.py --app-path "build_client/$APP_PATH" --pkg-name "$PKG_NAME" --version "$VERSION" --build-type "$BUILD_TYPE" $([ "$SKIP_NOTARIZATION" = "true" ] && echo "--skip-notarize"); then
+    echo "🔨 Building PKG with: ./scripts/keychain-free-build.sh $PKG_ARGS"
+    
+    if ./scripts/keychain-free-build.sh --app-path "build_client/$APP_PATH" --pkg-name "$PKG_NAME" --version "$VERSION" --build-type "$BUILD_TYPE" --output-dir "$OUTPUT_DIR"; then
         echo "✅ PKG created successfully: artifacts/${PKG_NAME}.pkg"
         PKG_CREATED=true
         PKG_FILE="${PKG_NAME}.pkg"
