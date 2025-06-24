@@ -1,5 +1,5 @@
 #!/bin/bash
-# emergency-clean-app.sh - Emergency app bundle cleaner using native macOS tools
+# clean-app.sh - Emergency app bundle cleaner using native macOS tools
 
 set -euo pipefail
 

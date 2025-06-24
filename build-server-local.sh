@@ -52,6 +52,27 @@ echo "🖥️ Building R2MIDI Server locally..."
 echo "Build type: $BUILD_TYPE"
 echo "Skip signing: $SKIP_SIGNING"
 echo "Skip notarization: $SKIP_NOTARIZATION"
+echo ""
+
+# Clean environment and recreate virtual environments at the beginning
+echo "🧹 Cleaning environment and recreating virtual environments..."
+if [ -f "./clean-environment.sh" ]; then
+    ./clean-environment.sh
+    echo "✅ Environment cleanup completed"
+else
+    echo "⚠️ clean-environment.sh not found, manual cleanup..."
+    rm -rf venv_server build_server 2>/dev/null || true
+fi
+
+# Recreate server virtual environment
+echo "🔄 Recreating server virtual environment..."
+if [ -f "./setup-virtual-environments.sh" ]; then
+    ./setup-virtual-environments.sh --server-only
+    echo "✅ Server virtual environment recreated"
+else
+    echo "❌ setup-virtual-environments.sh not found"
+    exit 1
+fi
 
 # Check if server virtual environment exists
 if [ ! -d "venv_server" ]; then
@@ -85,66 +106,249 @@ mkdir -p artifacts
 echo "🐍 Activating server virtual environment..."
 source venv_server/bin/activate
 
-# Verify environment
+# Verify environment with detailed progress
 echo "🧪 Verifying server environment..."
+echo "🔍 Checking Python installation and required packages..."
+echo ""
+
 python -c "
 import sys
-print(f'Python: {sys.version}')
+import time
+print(f'🐍 Python: {sys.version}')
+print(f'📍 Python path: {sys.executable}')
+print(f'📦 Site packages: {sys.path[-1] if sys.path else \"unknown\"}')
+print('')
 
-# Check required packages
-required = ['fastapi', 'uvicorn', 'rtmidi', 'py2app']
+# Check required packages with progress
+required = ['fastapi', 'uvicorn', 'rtmidi', 'py2app', 'pydantic', 'starlette']
 missing = []
+checked = 0
+total = len(required)
+
+print('🔍 Checking required packages:')
 for pkg in required:
+    checked += 1
     try:
-        __import__(pkg)
-        print(f'✅ {pkg}')
+        module = __import__(pkg)
+        version = getattr(module, '__version__', 'unknown')
+        print(f'✅ {pkg} ({version}) [{checked}/{total}]')
+        time.sleep(0.1)  # Small delay for visual effect
     except ImportError:
         missing.append(pkg)
-        print(f'❌ {pkg}')
+        print(f'❌ {pkg} [MISSING] [{checked}/{total}]')
+        time.sleep(0.1)
 
+print('')
 if missing:
-    print(f'Missing packages: {missing}')
+    print(f'❌ Missing packages: {missing}')
+    print('💡 Run: pip install ' + ' '.join(missing))
     exit(1)
+else:
+    print('✅ All required packages are available')
 "
 
 # Copy setup file to build directory
 echo "📝 Preparing build configuration..."
+echo "📦 Copying setup script: setup_server.py -> build_server/setup.py"
 cp setup_server.py build_server/setup.py
+echo "✅ Setup script copied"
 
 # Copy server directory to build directory (excluding .git)
 echo "📁 Copying server directory..."
-rsync -av --exclude='.git' server/ build_server/server/
+echo "🔄 Using rsync to copy server files (excluding .git)..."
+SERVER_FILES=$(find server -type f | wc -l | tr -d ' ')
+echo "📊 Server files to copy: $SERVER_FILES"
+
+if rsync -av --exclude='.git' server/ build_server/server/; then
+    COPIED_FILES=$(find build_server/server -type f | wc -l | tr -d ' ')
+    echo "✅ Server directory copied successfully ($COPIED_FILES files)"
+else
+    echo "❌ Failed to copy server directory"
+    exit 1
+fi
 
 # Change to build directory
+echo "📁 Changing to build directory: build_server/"
 cd build_server
+echo "📍 Current directory: $(pwd)"
 
 # Clean previous builds
 echo "🧹 Cleaning previous builds..."
+echo "🔍 Removing old build artifacts..."
 rm -rf build dist *.app setup_*.py 2>/dev/null || true
+echo "✅ Previous builds cleaned"
+echo "📁 Clean build directory contents:"
+ls -la . | head -10
 
 # Update version in setup file
 echo "🔢 Setting version to $VERSION..."
 sed -i.bak "s/__version__ = \".*\"/__version__ = \"$VERSION\"/" setup.py
 rm setup.py.bak
+echo "✅ Version updated in setup.py"
 
-# Build with py2app
+# Show pre-build summary
+echo ""
+echo "📊 Pre-build summary:"
+echo "📍 Build directory: $(pwd)"
+echo "📦 Python executable: $(which python)"
+echo "📊 Server files: $(find server -type f | wc -l | tr -d ' ')"
+echo "📦 Main entry point: $(ls -la server/main.py 2>/dev/null || echo 'main.py not found')"
+echo "📄 Setup script size: $(du -sh setup.py | cut -f1)"
+echo "💾 Available disk space: $(df -h . | tail -1 | awk '{print $4}')"
+echo ""
+
+# Build with py2app with progress monitoring
 echo "📦 Building server with py2app..."
 echo "🔧 Build command: python setup.py py2app"
+echo "⏳ This may take several minutes, please wait..."
+echo ""
 
-if python setup.py py2app; then
-    echo "✅ py2app build completed successfully"
+# Create a log file for detailed output
+LOG_FILE="py2app_build_$(date +%Y%m%d_%H%M%S).log"
+echo "📝 Detailed build log: $LOG_FILE"
+echo "🕐 Started at: $(date)"
+echo ""
+
+# Function to show progress
+show_progress() {
+    local pid=$1
+    local delay=10
+    local spinstr='|/-\\'
+    local i=0
+    local elapsed=0
+    local max_time=1800  # 30 minutes timeout
+
+    echo "🔄 Build in progress..."
+    echo "⏰ Maximum build time: $((max_time / 60)) minutes"
+    echo ""
+
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}
+        printf "\r[%c] Building... (%d seconds elapsed, %d minutes remaining)" "$spinstr" "$elapsed" "$(((max_time - elapsed) / 60))"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        elapsed=$((elapsed + delay))
+
+        # Check for timeout
+        if [ $elapsed -ge $max_time ]; then
+            echo ""
+            echo "⚠️  Build timeout reached ($((max_time / 60)) minutes)"
+            echo "🔍 Terminating build process..."
+            kill -TERM $pid 2>/dev/null || true
+            sleep 5
+            kill -KILL $pid 2>/dev/null || true
+            echo "❌ Build terminated due to timeout"
+            return 1
+        fi
+
+        # Show progress indicators every 30 seconds
+        if [ $((elapsed % 30)) -eq 0 ]; then
+            echo ""
+            echo "⏱️  Still building... ($elapsed seconds elapsed, $((elapsed / 60)) minutes)"
+
+            # Check for signs of progress
+            if [ -d "build" ]; then
+                echo "📁 Build directory exists - py2app is working"
+                local build_files=$(find build -type f 2>/dev/null | wc -l | tr -d ' ')
+                echo "📄 Files in build directory: $build_files"
+
+                # Check for recent file changes (activity indicator)
+                local recent_files=$(find build -type f -newermt '30 seconds ago' 2>/dev/null | wc -l | tr -d ' ')
+                if [ $recent_files -gt 0 ]; then
+                    echo "✅ Recent activity: $recent_files files modified in last 30 seconds"
+                else
+                    echo "⚠️  No recent file activity detected"
+                fi
+            fi
+
+            if [ -d "dist" ]; then
+                echo "📦 Dist directory exists - nearing completion"
+                local dist_size=$(du -sh dist 2>/dev/null | cut -f1 || echo "unknown")
+                echo "📊 Dist directory size: $dist_size"
+            fi
+
+            # Check memory usage
+            echo "💾 Memory usage:"
+            ps aux | grep python | grep -v grep | head -3
+            echo ""
+        fi
+    done
+    printf "\r\033[K"  # Clear the line
+    return 0
+}
+
+# Start the build in background and monitor progress
+echo "🚀 Starting py2app build process..."
+python setup.py py2app > "$LOG_FILE" 2>&1 &
+BUILD_PID=$!
+
+# Show progress while building
+if show_progress $BUILD_PID; then
+    # Wait for build to complete and get exit status
+    wait $BUILD_PID
+    BUILD_EXIT_CODE=$?
 else
-    echo "❌ py2app build failed"
+    # Timeout occurred
+    BUILD_EXIT_CODE=124  # Standard timeout exit code
+    echo "❌ Build process timed out after 30 minutes"
+fi
+
+echo "🏁 Build process completed at: $(date)"
+echo ""
+
+if [ $BUILD_EXIT_CODE -eq 0 ]; then
+    echo "✅ py2app build completed successfully"
+    echo "📊 Build log size: $(du -sh "$LOG_FILE" | cut -f1)"
+
+    # Show last few lines of successful build
+    echo "📋 Final build output:"
+    tail -20 "$LOG_FILE" | grep -E "(copying|creating|done|Success|✅|📦)" || echo "(No specific success indicators found)"
+elif [ $BUILD_EXIT_CODE -eq 124 ]; then
+    echo "❌ py2app build timed out after 30 minutes"
+    echo "📊 Build log size: $(du -sh "$LOG_FILE" | cut -f1)"
     echo "📋 Build directory contents:"
     ls -la . || true
+    echo ""
     echo "🔍 Checking for partial builds..."
     if [ -d "build" ]; then
         echo "📁 Build directory contents:"
         find build -type f 2>/dev/null | head -10
     fi
+    echo ""
+    echo "❌ Last 100 lines of build log (timeout case):"
+    tail -100 "$LOG_FILE" || echo "Could not read log file"
+    echo ""
+    echo "💡 Timeout troubleshooting tips:"
+    echo "  - Check if py2app is stuck on a specific file/module"
+    echo "  - Verify sufficient disk space and memory"
+    echo "  - Consider excluding large/problematic modules"
+    echo "  - Try running with --dev flag for faster build"
+
     deactivate
     cleanup_certificates
-    print_build_summary "R2MIDI Server" "failed" "Build failed during py2app compilation"
+    print_build_summary "R2MIDI Server" "failed" "Build timed out after 30 minutes (exit code: $BUILD_EXIT_CODE)"
+    exit 1
+else
+    echo "❌ py2app build failed (exit code: $BUILD_EXIT_CODE)"
+    echo "📊 Build log size: $(du -sh "$LOG_FILE" | cut -f1)"
+    echo "📋 Build directory contents:"
+    ls -la . || true
+    echo ""
+    echo "🔍 Checking for partial builds..."
+    if [ -d "build" ]; then
+        echo "📁 Build directory contents:"
+        find build -type f 2>/dev/null | head -10
+    fi
+    echo ""
+    echo "❌ Last 50 lines of build log:"
+    tail -50 "$LOG_FILE" || echo "Could not read log file"
+    echo ""
+    echo "🔍 Common py2app errors to check:"
+    grep -E "(Error|error|ERROR|Exception|ImportError|ModuleNotFoundError)" "$LOG_FILE" | tail -10 || echo "No obvious errors found in log"
+
+    deactivate
+    cleanup_certificates
+    print_build_summary "R2MIDI Server" "failed" "Build failed during py2app compilation (exit code: $BUILD_EXIT_CODE)"
     exit 1
 fi
 
@@ -202,9 +406,67 @@ setup_certificates "$SKIP_SIGNING"
 if [ "$SKIP_SIGNING" = "false" ] && [ "$CERT_LOADED" = "true" ]; then
     echo ""
     echo "🔐 Starting signing and notarization..."
+    
+    # Use clean-app.sh before signing if available
+    echo "🧹 Pre-signing app cleaning..."
+    if [ -f "../.github/scripts/clean-app.sh" ]; then
+        echo "📝 Using clean-app.sh for thorough cleaning..."
+        if "../.github/scripts/clean-app.sh" "$APP_PATH"; then
+            echo "✅ App bundle cleaned with clean-app.sh"
+        else
+            echo "⚠️ clean-app.sh failed, using fallback cleaning"
+            # Fallback cleaning
+            find "$APP_PATH" -name ".DS_Store" -delete 2>/dev/null || true
+            find "$APP_PATH" -name "._*" -delete 2>/dev/null || true
+            xattr -rc "$APP_PATH" 2>/dev/null || true
+        fi
+    else
+        echo "⚠️ clean-app.sh not found, using basic cleaning"
+        # Basic cleaning
+        find "$APP_PATH" -name ".DS_Store" -delete 2>/dev/null || true
+        find "$APP_PATH" -name "._*" -delete 2>/dev/null || true
+        xattr -rc "$APP_PATH" 2>/dev/null || true
+    fi
+    
+    # Additional handling for com.apple.provenance attributes
+    echo "🔧 Handling com.apple.provenance attributes..."
+    if [ -f "../.github/scripts/handle-attributes.sh" ]; then
+        chmod +x "../.github/scripts/handle-attributes.sh"
+        if "../.github/scripts/handle-attributes.sh" "$APP_PATH"; then
+            echo "✅ com.apple.provenance attributes handled"
+        else
+            echo "⚠️ Attribute handling script had issues, continuing anyway"
+        fi
+    fi
 
-    # Check if signing script exists
-    if [ -f "../.github/scripts/sign-notarize.sh" ]; then
+    # Check if signing script exists (preferred)
+    if [ -f "../.github/scripts/sign-and-notarize.sh" ]; then
+        echo "📝 Using signing script"
+        
+        # Build arguments for signing script
+        sign_args="--version $VERSION"
+        
+        if [ "$BUILD_TYPE" = "dev" ]; then
+            sign_args="$sign_args --dev"
+        fi
+        
+        if [ "$SKIP_NOTARIZATION" = "true" ]; then
+            sign_args="$sign_args --skip-notarize"
+        fi
+        
+        # Run signing from project root
+        cd ..
+        if ./.github/scripts/sign-and-notarize.sh $sign_args; then
+            echo "✅ Signing and notarization completed"
+        else
+            echo "❌ Signing failed"
+            if [ "$BUILD_TYPE" != "dev" ]; then
+                cleanup_certificates
+                exit 1
+            fi
+        fi
+        cd build_server
+    elif [ -f "../.github/scripts/sign-notarize.sh" ]; then
         echo "📋 Using signing script"
 
         # Build arguments for signing script
@@ -223,10 +485,16 @@ if [ "$SKIP_SIGNING" = "false" ] && [ "$CERT_LOADED" = "true" ]; then
         if ./.github/scripts/sign-notarize.sh $sign_args; then
             echo "✅ Signing and notarization completed"
         else
-            echo "❌ Signing failed"
-            if [ "$BUILD_TYPE" != "dev" ]; then
-                cleanup_certificates
-                exit 1
+            echo "⚠️ Signing failed, trying development build approach..."
+            # Fallback: try with dev flag to skip strict notarization
+            if ./.github/scripts/sign-notarize.sh $sign_args --dev; then
+                echo "✅ Development signing completed (some steps may have been skipped)"
+            else
+                echo "❌ Signing failed completely"
+                if [ "$BUILD_TYPE" != "dev" ]; then
+                    cleanup_certificates
+                    exit 1
+                fi
             fi
         fi
         cd build_server

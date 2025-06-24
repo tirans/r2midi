@@ -9,7 +9,7 @@ chmod +x test-signing-environment.sh
 chmod +x scripts/bulletproof_clean_app_bundle.py
 chmod +x scripts/clean-app-bundles.sh
 chmod +x scripts/fix_macos_signing_issue.py
-chmod +x .github/scripts/emergency-clean-app.sh
+chmod +x .github/scripts/clean-app.sh
 
 echo "✅ All signing scripts are now executable"
 echo ""

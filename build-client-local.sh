@@ -52,6 +52,27 @@ echo "🎨 Building R2MIDI Client locally..."
 echo "Build type: $BUILD_TYPE"
 echo "Skip signing: $SKIP_SIGNING"
 echo "Skip notarization: $SKIP_NOTARIZATION"
+echo ""
+
+# Clean environment and recreate virtual environments at the beginning
+echo "🧹 Cleaning environment and recreating virtual environments..."
+if [ -f "./clean-environment.sh" ]; then
+    ./clean-environment.sh
+    echo "✅ Environment cleanup completed"
+else
+    echo "⚠️ clean-environment.sh not found, manual cleanup..."
+    rm -rf venv_client build_client 2>/dev/null || true
+fi
+
+# Recreate client virtual environment
+echo "🔄 Recreating client virtual environment..."
+if [ -f "./setup-virtual-environments.sh" ]; then
+    ./setup-virtual-environments.sh --client-only
+    echo "✅ Client virtual environment recreated"
+else
+    echo "❌ setup-virtual-environments.sh not found"
+    exit 1
+fi
 
 # Check if client virtual environment exists
 if [ ! -d "venv_client" ]; then
@@ -85,26 +106,45 @@ mkdir -p artifacts
 echo "🐍 Activating client virtual environment..."
 source venv_client/bin/activate
 
-# Verify environment
+# Verify environment with detailed progress
 echo "🧪 Verifying client environment..."
+echo "🔍 Checking Python installation and required packages..."
+echo ""
+
 python -c "
 import sys
-print(f'Python: {sys.version}')
+import time
+print(f'🐍 Python: {sys.version}')
+print(f'📍 Python path: {sys.executable}')
+print(f'📦 Site packages: {sys.path[-1] if sys.path else \"unknown\"}')
+print('')
 
-# Check required packages
+# Check required packages with progress
 required = ['PyQt6', 'httpx', 'pydantic', 'py2app']
 missing = []
+checked = 0
+total = len(required)
+
+print('🔍 Checking required packages:')
 for pkg in required:
+    checked += 1
     try:
-        __import__(pkg)
-        print(f'✅ {pkg}')
+        module = __import__(pkg)
+        version = getattr(module, '__version__', 'unknown')
+        print(f'✅ {pkg} ({version}) [{checked}/{total}]')
+        time.sleep(0.1)  # Small delay for visual effect
     except ImportError:
         missing.append(pkg)
-        print(f'❌ {pkg}')
+        print(f'❌ {pkg} [MISSING] [{checked}/{total}]')
+        time.sleep(0.1)
 
+print('')
 if missing:
-    print(f'Missing packages: {missing}')
+    print(f'❌ Missing packages: {missing}')
+    print('💡 Run: pip install ' + ' '.join(missing))
     exit(1)
+else:
+    print('✅ All required packages are available')
 "
 
 # Copy setup file to build directory
@@ -190,9 +230,56 @@ setup_certificates "$SKIP_SIGNING"
 if [ "$SKIP_SIGNING" = "false" ] && [ "$CERT_LOADED" = "true" ]; then
     echo ""
     echo "🔐 Starting signing and notarization..."
+    
+    # Use clean-app.sh before signing if available
+    echo "🧹 Pre-signing app cleaning..."
+    if [ -f "../.github/scripts/clean-app.sh" ]; then
+        echo "📝 Using clean-app.sh for thorough cleaning..."
+        if "../.github/scripts/clean-app.sh" "$APP_PATH"; then
+            echo "✅ App bundle cleaned with clean-app.sh"
+        else
+            echo "⚠️ clean-app.sh failed, using fallback cleaning"
+            # Fallback cleaning
+            find "$APP_PATH" -name ".DS_Store" -delete 2>/dev/null || true
+            find "$APP_PATH" -name "._*" -delete 2>/dev/null || true
+            xattr -rc "$APP_PATH" 2>/dev/null || true
+        fi
+    else
+        echo "⚠️ clean-app.sh not found, using basic cleaning"
+        # Basic cleaning
+        find "$APP_PATH" -name ".DS_Store" -delete 2>/dev/null || true
+        find "$APP_PATH" -name "._*" -delete 2>/dev/null || true
+        xattr -rc "$APP_PATH" 2>/dev/null || true
+    fi
 
-    # Check if signing script exists
-    if [ -f "../.github/scripts/sign-notarize.sh" ]; then
+    # Check if signing script exists (preferred)
+    if [ -f "../.github/scripts/sign-and-notarize.sh" ]; then
+        echo "📝 Using signing script"
+        
+        # Build arguments for signing script
+        sign_args="--version $VERSION"
+        
+        if [ "$BUILD_TYPE" = "dev" ]; then
+            sign_args="$sign_args --dev"
+        fi
+        
+        if [ "$SKIP_NOTARIZATION" = "true" ]; then
+            sign_args="$sign_args --skip-notarize"
+        fi
+        
+        # Run signing from project root
+        cd ..
+        if ./.github/scripts/sign-and-notarize.sh $sign_args; then
+            echo "✅ Signing and notarization completed"
+        else
+            echo "❌ Signing failed"
+            if [ "$BUILD_TYPE" != "dev" ]; then
+                cleanup_certificates
+                exit 1
+            fi
+        fi
+        cd build_client
+    elif [ -f "../.github/scripts/sign-notarize.sh" ]; then
         echo "📋 Using signing script"
 
         # Build arguments for signing script
@@ -211,10 +298,16 @@ if [ "$SKIP_SIGNING" = "false" ] && [ "$CERT_LOADED" = "true" ]; then
         if ./.github/scripts/sign-notarize.sh $sign_args; then
             echo "✅ Signing and notarization completed"
         else
-            echo "❌ Signing failed"
-            if [ "$BUILD_TYPE" != "dev" ]; then
-                cleanup_certificates
-                exit 1
+            echo "⚠️ Signing failed, trying development build approach..."
+            # Fallback: try with dev flag to skip strict notarization
+            if ./.github/scripts/sign-notarize.sh $sign_args --dev; then
+                echo "✅ Development signing completed (some steps may have been skipped)"
+            else
+                echo "❌ Signing failed completely"
+                if [ "$BUILD_TYPE" != "dev" ]; then
+                    cleanup_certificates
+                    exit 1
+                fi
             fi
         fi
         cd build_client

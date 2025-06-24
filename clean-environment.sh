@@ -15,6 +15,11 @@ done
 
 echo "🧹 Starting comprehensive environment cleanup..."
 
+# Count files before cleanup for progress tracking
+echo "  📈 Scanning for cleanup targets..."
+BEFORE_COUNT=$(find . -type f 2>/dev/null | wc -l | tr -d ' ')
+echo "  📄 Files before cleanup: $BEFORE_COUNT"
+
 safe_remove() {
     local path="$1"
     local description="$2"
@@ -81,10 +86,32 @@ if [ "$DEEP_CLEAN" = "true" ]; then
     done
 fi
 
-# Clean Python cache
+# Clean Python cache and extended attributes more thoroughly
+echo "  🧹 Deep Python cache cleanup..."
 find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find . -name "*.pyc" -delete 2>/dev/null || true
 find . -name "*.pyo" -delete 2>/dev/null || true
+find . -name "*.pyd" -delete 2>/dev/null || true
+
+# Remove extended attributes from all files
+echo "  🧹 Removing extended attributes..."
+find . -exec xattr -c {} \; 2>/dev/null || true
+
+# Clean macOS specific metadata
+echo "  🧹 Removing macOS metadata..."
+find . -name ".DS_Store" -delete 2>/dev/null || true
+find . -name "._*" -delete 2>/dev/null || true
+find . -name "__MACOSX" -type d -exec rm -rf {} + 2>/dev/null || true
+find . -name ".AppleDouble" -type d -exec rm -rf {} + 2>/dev/null || true
+find . -name ".LSOverride" -delete 2>/dev/null || true
+
+# Clean development artifacts
+echo "  🧹 Removing development artifacts..."
+find . -name ".pytest_cache" -type d -exec rm -rf {} + 2>/dev/null || true
+find . -name ".coverage" -delete 2>/dev/null || true
+find . -name "*.coverage" -delete 2>/dev/null || true
+find . -name ".tox" -type d -exec rm -rf {} + 2>/dev/null || true
+find . -name ".mypy_cache" -type d -exec rm -rf {} + 2>/dev/null || true
 
 # Clean py2app cache
 safe_remove "~/.py2app" "py2app cache"
@@ -98,10 +125,23 @@ find . -name "*.egg" -delete 2>/dev/null || true
 safe_remove "*.p12" "certificate files"
 safe_remove "entitlements.plist" "entitlements file"
 
-# Clean package caches if requested
+# Package cache cleanup
 if [ "$KEEP_CACHE" = "false" ]; then
+    echo "  🧹 Clearing package caches..."
     python3 -m pip cache purge 2>/dev/null || true
     command -v brew >/dev/null && brew cleanup 2>/dev/null || true
+fi
+
+# Count files after cleanup and show summary
+echo "  📈 Calculating cleanup results..."
+AFTER_COUNT=$(find . -type f 2>/dev/null | wc -l | tr -d ' ')
+REMOVED_COUNT=$((BEFORE_COUNT - AFTER_COUNT))
+if [ $REMOVED_COUNT -gt 0 ]; then
+    # Estimate size saved (rough approximation)
+    ESTIMATED_SIZE=$(echo "scale=1; $REMOVED_COUNT * 0.1" | bc 2>/dev/null || echo "${REMOVED_COUNT}")
+    echo "Files removed: $REMOVED_COUNT (~${ESTIMATED_SIZE} MB estimated)"
+else
+    echo "Files removed: 0"
 fi
 
 echo "✅ Environment cleanup completed!"

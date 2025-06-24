@@ -123,17 +123,28 @@ jobs:
           echo "Repository structure:"
           ls -la
 
-      - name: Clean environment
+      - name: Clean environment (preserve virtual environments)
         shell: bash
-        run: ./clean-environment.sh --keep-cache
+        run: |
+          echo "🧹 Cleaning build artifacts while preserving virtual environments..."
+          # Clean build artifacts but preserve virtual environments
+          rm -rf build_client build_server 2>/dev/null || true
+          rm -rf build dist artifacts 2>/dev/null || true
+          rm -rf build_native 2>/dev/null || true
+          # Clean Python cache
+          find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          find . -name "*.pyc" -delete 2>/dev/null || true
+          find . -name "*.pyo" -delete 2>/dev/null || true
+          # Clean py2app cache
+          rm -rf ~/.py2app "$HOME/.py2app" 2>/dev/null || true
+          # Clean setuptools/wheel cache and build artifacts
+          find . -name "*.egg-info" -type d -exec rm -rf {} + 2>/dev/null || true
+          find . -name "*.egg" -delete 2>/dev/null || true
+          echo "✅ Build artifacts cleaned, virtual environments preserved"
 
       - name: Setup virtual environments
         shell: bash
         run: ./setup-virtual-environments.sh --use-uv
-
-      - name: Setup client virtual environment
-        shell: bash
-        run: ./setup-virtual-environments.sh --client-only
 
       - name: Test environments
         shell: bash

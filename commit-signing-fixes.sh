@@ -23,7 +23,7 @@ echo ""
 echo "GitHub Actions updates:"
 echo "  - .github/workflows/build-macos.yml (make Python scripts executable)"
 echo "  - .github/scripts/sign-and-notarize-macos.sh (better path resolution)"
-echo "  - .github/scripts/emergency-clean-app.sh (new fallback cleaner)"
+echo "  - .github/scripts/clean-app.sh (new fallback cleaner)"
 echo ""
 
 echo "Helper scripts:"

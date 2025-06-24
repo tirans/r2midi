@@ -276,7 +276,7 @@ check_environment() {
 
     if [ ! -d "venv_client" ]; then
         venv_issues+=("venv_client")
-        log_error "Client virtual environment not found: venv_client"
+        log_warning "Client virtual environment not found: venv_client"
     else
         local client_python="venv_client/bin/python"
         if [ -x "$client_python" ]; then
@@ -289,7 +289,7 @@ check_environment() {
 
     if [ ! -d "venv_server" ]; then
         venv_issues+=("venv_server")
-        log_error "Server virtual environment not found: venv_server"
+        log_warning "Server virtual environment not found: venv_server"
     else
         local server_python="venv_server/bin/python"
         if [ -x "$server_python" ]; then
@@ -301,8 +301,9 @@ check_environment() {
     fi
 
     if [ ${#venv_issues[@]} -gt 0 ]; then
-        log_error "Virtual environment issues found. Run: ./setup-virtual-environments.sh"
-        exit 1
+        log_info "Virtual environment issues found: ${venv_issues[*]}"
+        log_info "Note: Individual build scripts will create virtual environments as needed"
+        log_info "This is normal for fresh builds or after cleanup"
     fi
 
     # Check disk space
@@ -568,21 +569,74 @@ except:
 
 # Clean previous builds
 clean_builds() {
-    if [ "$CLEAN_BUILD" = true ]; then
-        log_step "Cleaning Previous Builds"
+    log_step "Cleaning Build Environment"
 
-        log_info "Removing build directories..."
-        rm -rf build_server/build build_server/dist
-        rm -rf build_client/build build_client/dist
+    # Check if virtual environments already exist and we're in GitHub Actions
+    local venv_client_exists=false
+    local venv_server_exists=false
 
-        log_info "Removing artifacts..."
-        rm -rf artifacts/*.pkg artifacts/*.dmg artifacts/*.app
+    if [ -d "venv_client" ] && [ -x "venv_client/bin/python" ]; then
+        venv_client_exists=true
+    fi
 
-        log_info "Cleaning Python cache..."
-        find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+    if [ -d "venv_server" ] && [ -x "venv_server/bin/python" ]; then
+        venv_server_exists=true
+    fi
+
+    # In GitHub Actions, if virtual environments already exist, preserve them
+    if [ "$IS_GITHUB_ACTIONS" = true ] && [ "$venv_client_exists" = true ] && [ "$venv_server_exists" = true ]; then
+        log_info "GitHub Actions: Virtual environments already exist, preserving them..."
+        log_info "Cleaning only build artifacts while preserving virtual environments..."
+
+        # Clean build artifacts but preserve virtual environments
+        rm -rf build_client build_server 2>/dev/null || true
+        rm -rf build dist artifacts 2>/dev/null || true
+        rm -rf build_native 2>/dev/null || true
+
+        # Clean Python cache
+        find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
         find . -name "*.pyc" -delete 2>/dev/null || true
+        find . -name "*.pyo" -delete 2>/dev/null || true
 
-        log_success "Build environment cleaned"
+        # Clean py2app cache
+        rm -rf ~/.py2app "$HOME/.py2app" 2>/dev/null || true
+
+        # Clean setuptools/wheel cache and build artifacts
+        find . -name "*.egg-info" -type d -exec rm -rf {} + 2>/dev/null || true
+        find . -name "*.egg" -delete 2>/dev/null || true
+
+        log_success "Build artifacts cleaned, virtual environments preserved"
+    else
+        # Standard cleanup for local development or when virtual environments don't exist
+        log_info "Running comprehensive environment cleanup..."
+        if [ -f "./clean-environment.sh" ]; then
+            if [ "$CLEAN_BUILD" = true ]; then
+                log_info "Deep cleaning environment (--clean flag enabled)..."
+                ./clean-environment.sh --deep
+            else
+                log_info "Standard environment cleanup..."
+                ./clean-environment.sh
+            fi
+            log_success "Environment cleanup completed"
+        else
+            log_warning "clean-environment.sh not found, falling back to basic cleanup"
+
+            # Fallback to basic cleanup if clean-environment.sh is not available
+            if [ "$CLEAN_BUILD" = true ]; then
+                log_info "Removing build directories..."
+                rm -rf build_server/build build_server/dist
+                rm -rf build_client/build build_client/dist
+
+                log_info "Removing artifacts..."
+                rm -rf artifacts/*.pkg artifacts/*.dmg artifacts/*.app
+
+                log_info "Cleaning Python cache..."
+                find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+                find . -name "*.pyc" -delete 2>/dev/null || true
+
+                log_success "Basic build environment cleaned"
+            fi
+        fi
     fi
 }
 
@@ -614,20 +668,8 @@ build_component() {
 
     log_success "Build script found: $script_name"
 
-    # Check virtual environment
-    local venv_dir="venv_${component}"
-    if [ -d "$venv_dir" ]; then
-        local venv_python="$venv_dir/bin/python"
-        if [ -x "$venv_python" ]; then
-            local venv_version=$("$venv_python" --version 2>/dev/null || echo "unknown")
-            log_success "Virtual environment ready: $venv_dir ($venv_version)"
-        else
-            log_warning "Virtual environment Python not executable: $venv_python"
-        fi
-    else
-        log_error "Virtual environment not found: $venv_dir"
-        return 1
-    fi
+    # Note: Virtual environment validation removed - individual build scripts handle this
+    log_info "Virtual environment will be created by build script if needed"
 
     # Build arguments
     local build_args="--version $VERSION"
@@ -654,9 +696,14 @@ build_component() {
     # Execute build with detailed logging
     log_command "./$script_name $build_args"
 
-    if ./"$script_name" $build_args; then
+    # Create a temporary log file for this build
+    local temp_log="logs/${component}_build_$(date '+%Y%m%d_%H%M%S').log"
+    mkdir -p logs
+
+    if ./"$script_name" $build_args > "$temp_log" 2>&1; then
         local duration=$(end_timer "$start_time" "${component_display} Build")
         log_success "${component_display} build completed successfully"
+        log_info "Detailed build output saved to: $temp_log"
 
         # Check for build artifacts
         log_info "Checking for build artifacts..."
@@ -690,13 +737,10 @@ build_component() {
         local duration=$(end_timer "$start_time" "${component_display} Build (FAILED)")
         log_error "${component_display} build failed with exit code: $exit_code"
         log_error "Build duration before failure: ${duration}s"
+        log_error "Detailed build output saved to: $temp_log"
 
         # Log potential issues
         log_info "Checking for common build issues..."
-        if [ ! -d "$venv_dir" ]; then
-            log_error "Virtual environment missing: $venv_dir"
-        fi
-
         if [ ! -f "$script_name" ]; then
             log_error "Build script missing: $script_name"
         fi

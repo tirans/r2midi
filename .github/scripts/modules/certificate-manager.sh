@@ -103,17 +103,28 @@ validate_certificate() {
     log_info "Validating certificate: $cert_name"
     log_info "Required usage: $required_usage"
 
+    # Clean up the certificate name - remove any extra whitespace or log messages
+    local actual_cert_name=$(echo "$cert_name" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+    
+    # If this looks like a full identity string (contains quotes), extract the certificate name
+    if [[ "$actual_cert_name" =~ \"([^\"]+)\" ]]; then
+        actual_cert_name="${BASH_REMATCH[1]}"
+        log_info "Extracted certificate name from identity: $actual_cert_name"
+    fi
+
+    log_info "Using certificate name for validation: $actual_cert_name"
+
     # Check if certificate exists
-    if ! security find-certificate -c "$cert_name" >/dev/null 2>&1; then
-        log_error "Certificate not found: $cert_name"
+    if ! security find-certificate -c "$actual_cert_name" >/dev/null 2>&1; then
+        log_error "Certificate not found: $actual_cert_name"
         return 1
     fi
 
     # Check if certificate is valid for code signing
-    local cert_details=$(get_certificate_details "$cert_name")
+    local cert_details=$(get_certificate_details "$actual_cert_name")
 
     if [ -z "$cert_details" ]; then
-        log_error "Failed to get certificate details: $cert_name"
+        log_error "Failed to get certificate details: $actual_cert_name"
         return 1
     fi
 
@@ -140,18 +151,18 @@ validate_certificate() {
     fi
 
     # Check if our certificate name appears in the identities (with proper escaping)
-    if echo "$identities" | grep -F "$cert_name" >/dev/null 2>&1; then
-        log_success "Certificate is valid and available for code signing: $cert_name"
+    if echo "$identities" | grep -F "$actual_cert_name" >/dev/null 2>&1; then
+        log_success "Certificate is valid and available for code signing: $actual_cert_name"
         return 0
     else
         # If exact match fails, try a more flexible approach
         log_info "Exact match failed, trying flexible validation..."
 
         # Extract just the common name part for comparison
-        local cert_common_name=$(echo "$cert_name" | sed 's/.*: \([^(]*\).*/\1/' | sed 's/[[:space:]]*$//')
+        local cert_common_name=$(echo "$actual_cert_name" | sed 's/.*: \([^(]*\).*/\1/' | sed 's/[[:space:]]*$//')
 
         if echo "$identities" | grep -F "$cert_common_name" >/dev/null 2>&1; then
-            log_success "Certificate is valid and available for code signing (flexible match): $cert_name"
+            log_success "Certificate is valid and available for code signing (flexible match): $actual_cert_name"
             return 0
         else
             log_warning "Certificate validation using grep failed, but certificate exists"
@@ -159,11 +170,11 @@ validate_certificate() {
             echo "$identities" | while read -r line; do
                 log_info "  $line"
             done
-            log_info "Looking for: $cert_name"
+            log_info "Looking for: $actual_cert_name"
 
             # Since the certificate exists and we found it earlier, assume it's valid
             # This is a fallback for cases where string matching fails due to formatting
-            log_success "Certificate exists in keychain, assuming valid for code signing: $cert_name"
+            log_success "Certificate exists in keychain, assuming valid for code signing: $actual_cert_name"
             return 0
         fi
     fi
@@ -214,22 +225,18 @@ select_signing_identity() {
     local identity_type="${1:-Developer ID Application}"
     local team_id="${2:-}"
 
-    log_info "Selecting best signing identity for: $identity_type" >&2
-
+    # Note: All logging goes to stderr to keep stdout clean for return value
     local identities=$(security find-identity -v -p codesigning | grep "$identity_type" || true)
 
     if [ -z "$identities" ]; then
-        log_error "No signing identities found for: $identity_type" >&2
         return 1
     fi
 
     # If team ID is specified, try to find matching certificate
     if [ -n "$team_id" ]; then
-        log_info "Looking for certificate with team ID: $team_id" >&2
         local team_identity=$(echo "$identities" | grep "$team_id" | head -1 || true)
         if [ -n "$team_identity" ]; then
             local cert_name=$(echo "$team_identity" | sed 's/.*"\(.*\)".*/\1/')
-            log_success "Found team-specific identity: $cert_name" >&2
             echo "$cert_name"
             return 0
         fi
@@ -239,12 +246,10 @@ select_signing_identity() {
     local first_identity=$(echo "$identities" | head -1)
     if [ -n "$first_identity" ]; then
         local cert_name=$(echo "$first_identity" | sed 's/.*"\(.*\)".*/\1/')
-        log_success "Selected identity: $cert_name" >&2
         echo "$cert_name"
         return 0
     fi
 
-    log_error "No valid signing identity found" >&2
     return 1
 }
 

@@ -21,7 +21,7 @@ chmod +x build-server-local.sh
 chmod +x setup-local-certificates.sh
 chmod +x clean-for-signing.sh
 chmod +x emergency-fix-python-framework.sh
-chmod +x .github/scripts/emergency-clean-app.sh
+chmod +x .github/scripts/clean-app.sh
 chmod +x test-signing-environment.sh
 echo "✅ Scripts are now executable"
 echo ""
