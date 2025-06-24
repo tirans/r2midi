@@ -82,13 +82,33 @@ def clean_with_ditto(app_path):
         log("Running final recursive xattr clear...")
         run_command(f'xattr -rc "{clean_app}"', check=False)
         
-        # Verify again
-        success, stdout, stderr = run_command(f'xattr -lr "{clean_app}"')
-        xattr_lines = [line for line in stdout.split('\n') if line.strip()]
-        if len(xattr_lines) == 0:
-            log("✅ Ditto + xattr -rc resulted in completely clean app")
+        # Also clean frameworks specifically
+        frameworks_dir = clean_app / "Contents" / "Frameworks"
+        if frameworks_dir.exists():
+            log("Final framework cleaning...")
+            for item in frameworks_dir.iterdir():
+                run_command(f'xattr -cr "{item}"', check=False)
+                run_command(f'xattr -d "*" "{item}" 2>/dev/null', check=False)
+        
+        # Verify again with detailed count
+        log("Verifying cleanup...")
+        cmd = f'find "{clean_app}" -exec xattr -l {{}} + 2>/dev/null | grep -v "^$" | wc -l'
+        success, stdout, stderr = run_command(cmd)
+        xattr_count = int(stdout.strip()) if stdout.strip().isdigit() else -1
+        
+        if xattr_count == 0:
+            log("✅ Ditto + cleanup resulted in completely clean app")
+        elif xattr_count > 0:
+            log(f"⚠️  Still {xattr_count} xattr lines after cleaning", "WARNING")
+            # Show which files still have xattrs
+            cmd = f'find "{clean_app}" -exec xattr -l {{}} + 2>/dev/null | grep -B1 "^[[:space:]]" | grep -v "^--$" | head -20'
+            success, stdout, stderr = run_command(cmd)
+            if stdout.strip():
+                log("Files with remaining xattrs:", "WARNING")
+                for line in stdout.strip().split('\n')[:10]:
+                    log(f"  {line}", "WARNING")
         else:
-            log(f"⚠️  Still {len(xattr_lines)} xattrs after all cleaning attempts", "WARNING")
+            log("✅ App appears to be clean")
         
         # Replace original with clean copy
         backup_path = app_path.parent / f"{app_path.name}.backup-{int(time.time())}"
@@ -172,18 +192,31 @@ def find_problematic_files(app_path):
     """Find files with extended attributes or resource forks."""
     problematic = []
     
-    for root, dirs, files in os.walk(app_path):
-        for item in files + dirs:
-            item_path = os.path.join(root, item)
-            
-            # Check for extended attributes
-            success, stdout, stderr = run_command(f'xattr -l "{item_path}"', check=False)
-            if stdout.strip():
-                problematic.append((item_path, "xattrs", stdout.strip()))
-            
-            # Check for resource forks (._* files)
-            if item.startswith("._"):
-                problematic.append((item_path, "resource_fork", ""))
+    log("Checking for extended attributes...")
+    
+    # Use native find command for better performance
+    cmd = f'find "{app_path}" -exec xattr -l {{}} + 2>/dev/null'
+    success, stdout, stderr = run_command(cmd, check=False)
+    
+    if stdout.strip():
+        # Parse the output to count files with xattrs
+        current_file = None
+        for line in stdout.split('\n'):
+            if line and not line.startswith(' '):
+                # This is a filename
+                current_file = line.rstrip(':')
+            elif line.strip() and current_file:
+                # This is an xattr for the current file
+                problematic.append((current_file, "xattrs", line.strip()))
+    
+    # Also check for resource fork files
+    cmd = f'find "{app_path}" -name "._*" -o -name ".DS_Store" 2>/dev/null'
+    success, stdout, stderr = run_command(cmd, check=False)
+    
+    if stdout.strip():
+        for file in stdout.strip().split('\n'):
+            if file:
+                problematic.append((file, "resource_fork", ""))
     
     return problematic
 
@@ -191,28 +224,34 @@ def find_problematic_files(app_path):
 def aggressive_clean_file(file_path):
     """Aggressively clean a single file."""
     try:
-        # Remove all xattrs
+        # Method 1: Remove all xattrs
         run_command(f'xattr -c "{file_path}"', check=False)
         
-        # If it's a Mach-O binary, try to strip it
-        success, stdout, stderr = run_command(f'file "{file_path}"', check=False)
-        if "Mach-O" in stdout:
-            # Don't strip code signature
-            run_command(f'strip -S "{file_path}" 2>/dev/null', check=False)
+        # Method 2: Delete all xattrs by name
+        run_command(f'xattr -d "*" "{file_path}" 2>/dev/null', check=False)
+        
+        # Method 3: Clear Finder info if SetFile is available
+        if shutil.which('SetFile'):
+            run_command(f'SetFile -c "" -t "" "{file_path}" 2>/dev/null', check=False)
+        
+        # Method 4: Remove specific problematic attributes
+        for attr in ['com.apple.FinderInfo', 'com.apple.ResourceFork', 
+                     'com.apple.metadata:kMDItemWhereFroms', 'com.apple.quarantine']:
+            run_command(f'xattr -d {attr} "{file_path}" 2>/dev/null', check=False)
         
         return True
     except:
         return False
 
 
-def clean_python_framework(framework_path):
-    """Special handling for Python.framework."""
+def clean_framework(framework_path, framework_name="Framework"):
+    """Deep clean any framework bundle."""
     framework_path = Path(framework_path)
     
     if not framework_path.exists():
         return
     
-    log(f"Deep cleaning Python.framework...")
+    log(f"Deep cleaning {framework_name}...")
     
     # Remove all .pyc files (they often have xattrs)
     pyc_count = 0
@@ -238,20 +277,32 @@ def clean_python_framework(framework_path):
     if pycache_count > 0:
         log(f"Removed {pycache_count} __pycache__ directories")
     
-    # Remove all .DS_Store files
-    for ds_store in framework_path.rglob(".DS_Store"):
-        try:
-            ds_store.unlink()
-        except:
-            pass
+    # Remove all .DS_Store and ._* files
+    for pattern in [".DS_Store", "._*"]:
+        for file in framework_path.rglob(pattern):
+            try:
+                file.unlink()
+            except:
+                pass
     
-    # Strip xattrs from remaining files - use xattr -rc for complete removal
-    log("Running xattr -rc on Python.framework...")
+    # Use native macOS tool to strip all metadata
+    log(f"Stripping all metadata from {framework_name}...")
+    
+    # Method 1: Use xattr -rc (recursive clear)
     run_command(f'xattr -rc "{framework_path}"', check=False)
     
-    # Belt and suspenders - also do per-file clearing
-    run_command(f'find "{framework_path}" -type f -exec xattr -c {{}} \\; 2>/dev/null', check=False)
-    run_command(f'find "{framework_path}" -type d -exec xattr -c {{}} \\; 2>/dev/null', check=False)
+    # Method 2: Use find with xattr -d * to delete ALL attributes
+    run_command(f'find "{framework_path}" -type f -exec xattr -d "*" {{}} \\; 2>/dev/null', check=False)
+    run_command(f'find "{framework_path}" -type d -exec xattr -d "*" {{}} \\; 2>/dev/null', check=False)
+    
+    # Method 3: Use SetFile to clear Finder info specifically
+    if shutil.which('SetFile'):
+        run_command(f'find "{framework_path}" -type f -exec SetFile -c "" -t "" {{}} \\; 2>/dev/null', check=False)
+    
+    # Method 4: Remove com.apple.FinderInfo specifically
+    run_command(f'xattr -dr com.apple.FinderInfo "{framework_path}" 2>/dev/null', check=False)
+    
+    log(f"Completed deep clean of {framework_name}")
 
 
 def bulletproof_clean(app_path, method="auto"):
@@ -277,10 +328,20 @@ def bulletproof_clean(app_path, method="auto"):
     log(f"Starting bulletproof clean of {app_path.name}")
     log(f"Method: {method}")
     
-    # First, always try to clean Python.framework if it exists
-    python_framework = app_path / "Contents" / "Frameworks" / "Python.framework"
-    if python_framework.exists():
-        clean_python_framework(python_framework)
+    # First, clean ALL frameworks
+    log("Cleaning all frameworks...")
+    frameworks_dir = app_path / "Contents" / "Frameworks"
+    if frameworks_dir.exists():
+        for item in frameworks_dir.iterdir():
+            if item.suffix == '.framework':
+                clean_framework(item, item.name)
+            elif item.suffix in ['.dylib', '.so']:
+                # Clean individual dylib files
+                log(f"Cleaning dylib: {item.name}")
+                run_command(f'xattr -c "{item}"', check=False)
+                run_command(f'xattr -d "*" "{item}" 2>/dev/null', check=False)
+                if shutil.which('SetFile'):
+                    run_command(f'SetFile -c "" -t "" "{item}" 2>/dev/null', check=False)
     
     # Find problematic files before cleaning
     log("Scanning for problematic files...")
@@ -334,32 +395,41 @@ def bulletproof_clean(app_path, method="auto"):
             
             run_command(cmd, check=False)
         
-        # Nuclear xattr removal
+        # Nuclear xattr removal with improved methods
         log("Removing all extended attributes...")
         
-        # Method 1: xattr -rc (most effective)
-        log("Running xattr -rc (recursive clear)...")
+        # Method 1: xattr -rc (recursive clear)
+        log("Method 1: xattr -rc...")
         run_command(f'xattr -rc "{app_path}"', check=False)
         
-        # Method 2: Also try -cr in case of version differences
-        run_command(f'xattr -cr "{app_path}"', check=False)
+        # Method 2: Find and delete ALL xattrs
+        log("Method 2: Deleting all xattrs by wildcard...")
+        run_command(f'find "{app_path}" -type f -exec xattr -d "*" {{}} \\; 2>/dev/null', check=False)
+        run_command(f'find "{app_path}" -type d -exec xattr -d "*" {{}} \\; 2>/dev/null', check=False)
         
-        # Method 3: find with xattr -c on each file (belt and suspenders)
-        log("Running per-file xattr clear...")
-        run_command(f'find "{app_path}" -type f -exec xattr -c {{}} \\; 2>/dev/null', check=False)
-        run_command(f'find "{app_path}" -type d -exec xattr -c {{}} \\; 2>/dev/null', check=False)
+        # Method 3: Clear Finder info with SetFile
+        if shutil.which('SetFile'):
+            log("Method 3: Clearing Finder info with SetFile...")
+            run_command(f'find "{app_path}" -type f -exec SetFile -c "" -t "" {{}} \\; 2>/dev/null', check=False)
         
-        # Method 3: Specific xattr removal
-        xattrs_to_remove = [
+        # Method 4: Target specific problematic attributes
+        log("Method 4: Removing specific attributes...")
+        problematic_attrs = [
+            "com.apple.FinderInfo",
+            "com.apple.ResourceFork", 
             "com.apple.quarantine",
             "com.apple.metadata:kMDItemWhereFroms",
             "com.apple.metadata:kMDItemDownloadedDate",
-            "com.apple.lastuseddate#PS",
-            "com.apple.finder.info"
+            "com.apple.lastuseddate#PS"
         ]
         
-        for xattr_name in xattrs_to_remove:
+        for xattr_name in problematic_attrs:
             run_command(f'xattr -dr {xattr_name} "{app_path}" 2>/dev/null', check=False)
+        
+        # Method 5: Use native macOS 'dot_clean' utility
+        log("Method 5: Running dot_clean utility...")
+        parent_dir = os.path.dirname(app_path)
+        run_command(f'dot_clean -m "{parent_dir}" 2>/dev/null', check=False)
         
         success = True
     
@@ -376,21 +446,46 @@ def bulletproof_clean(app_path, method="auto"):
             else:
                 log(f"⚠️  {xattr_count} extended attributes remain")
         
-        # Check if it can be signed
-        log("Testing code signing...")
-        test_result, stdout, stderr = run_command(
-            f'codesign --force --deep --sign - "{app_path}" 2>&1',
-            check=False
-        )
+        # Check if it can be signed with a more specific test
+        log("Testing code signing readiness...")
         
-        if test_result:
-            log("✅ Test signing succeeded!")
+        # First check if there are any files with xattrs
+        cmd = f'find "{app_path}" -exec xattr -l {{}} + 2>/dev/null | wc -l'
+        success_check, stdout, stderr = run_command(cmd)
+        final_xattr_count = int(stdout.strip()) if stdout.strip().isdigit() else -1
+        
+        log(f"Final extended attribute count: {final_xattr_count}")
+        
+        if final_xattr_count == 0:
+            log("✅ No extended attributes found - ready for signing!")
+            success = True
         else:
-            if "resource fork" in stderr:
-                log("❌ Still has resource fork issues", "ERROR")
-                success = False
+            # Try to identify which files are problematic
+            log("Identifying problematic files...", "WARNING")
+            cmd = f'find "{app_path}" -exec xattr -l {{}} + 2>/dev/null | grep -B1 "^[[:space:]]" | grep -v "^--$" | grep -v "^[[:space:]]" | sort | uniq'
+            success_check, stdout, stderr = run_command(cmd)
+            if stdout.strip():
+                log("Files with extended attributes:", "WARNING")
+                for line in stdout.strip().split('\n')[:20]:
+                    if line.strip():
+                        log(f"  {line}", "WARNING")
+            
+            # Test actual signing
+            test_result, stdout, stderr = run_command(
+                f'codesign --force --deep --sign - "{app_path}" 2>&1',
+                check=False
+            )
+            
+            if test_result:
+                log("✅ Test signing succeeded despite xattrs!")
             else:
-                log("⚠️  Test signing failed but might work with real certificate")
+                if "resource fork" in stderr or "Finder information" in stderr:
+                    log("❌ Still has resource fork/Finder info issues", "ERROR")
+                    log(f"Error: {stderr}", "ERROR")
+                    success = False
+                else:
+                    log("⚠️  Test signing failed but might work with real certificate")
+                    log(f"Error: {stderr}", "WARNING")
     
     return success
 

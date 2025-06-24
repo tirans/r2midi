@@ -1,285 +1,302 @@
 #!/bin/bash
 set -euo pipefail
-
-# Generate build summary for GitHub Actions
-# Usage: generate-build-summary.sh <platform> <build_type> [version] [signing_status]
+# Generate build summary report
+# Usage: generate-build-summary.sh <platform> <build_type> <version> <signing_mode>
 
 PLATFORM="${1:-unknown}"
 BUILD_TYPE="${2:-production}"
-VERSION="${3:-${APP_VERSION:-unknown}}"
-SIGNING_STATUS="${4:-unsigned}"
+VERSION="${3:-1.0.0}"
+SIGNING_MODE="${4:-unsigned}"
 
-echo "📋 Generating build summary for $PLATFORM..."
+echo "📋 Generating build summary for $PLATFORM ($BUILD_TYPE, $VERSION, $SIGNING_MODE)..."
 
-# Function to get platform emoji
-get_platform_emoji() {
-    case "$1" in
-        linux) echo "🐧" ;;
-        macos) echo "🍎" ;;
-        windows) echo "🪟" ;;
-        python) echo "🐍" ;;
-        *) echo "📦" ;;
-    esac
+# Create artifacts directory if it doesn't exist
+mkdir -p artifacts
+
+# Function to get file size in human readable format
+get_file_size() {
+    local file="$1"
+    if [ -f "$file" ]; then
+        ls -lh "$file" | awk '{print $5}'
+    else
+        echo "N/A"
+    fi
 }
 
-# Function to get signing status with emoji
-get_signing_emoji() {
-    case "$1" in
-        signed|notarized) echo "✅" ;;
-        unsigned) echo "❌" ;;
-        *) echo "⚠️" ;;
-    esac
+# Function to get file checksum
+get_file_checksum() {
+    local file="$1"
+    if [ -f "$file" ] && command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    else
+        echo "N/A"
+    fi
 }
 
-# Function to list artifacts with sizes
-list_artifacts() {
-    local search_path="${1:-artifacts}"
-    local pattern="${2:-*}"
+# Function to check build status
+check_build_status() {
+    local component="$1"
+    local dist_dir="$2"
     
-    if [ -d "$search_path" ]; then
-        local found=false
-        find "$search_path" -name "$pattern" -type f | sort | while read file; do
-            if [ -f "$file" ]; then
-                local size=$(du -h "$file" | cut -f1)
-                local basename_file=$(basename "$file")
-                echo "- $basename_file ($size)"
-                found=true
+    if [ -d "$dist_dir" ] && [ "$(ls -A "$dist_dir" 2>/dev/null)" ]; then
+        echo "✅ SUCCESS"
+        return 0
+    else
+        echo "❌ FAILED"
+        return 1
+    fi
+}
+
+# Function to list build artifacts
+list_build_artifacts() {
+    local dist_dir="$1"
+    local prefix="$2"
+    
+    if [ -d "$dist_dir" ]; then
+        echo "${prefix}Build Artifacts:"
+        find "$dist_dir" -type f -name "*" | while read -r file; do
+            local size=$(get_file_size "$file")
+            local checksum=$(get_file_checksum "$file")
+            echo "${prefix}  - $(basename "$file") ($size)"
+            if [ "$checksum" != "N/A" ]; then
+                echo "${prefix}    SHA256: $checksum"
             fi
         done
+    else
+        echo "${prefix}No build artifacts found"
+    fi
+}
+
+# Generate main build summary
+generate_main_summary() {
+    local summary_file="artifacts/BUILD_SUMMARY_${PLATFORM}_${VERSION}.md"
+    
+    cat > "$summary_file" << EOF
+# Build Summary Report
+
+## Build Information
+- **Platform**: $PLATFORM
+- **Build Type**: $BUILD_TYPE
+- **Version**: $VERSION
+- **Signing Mode**: $SIGNING_MODE
+- **Build Date**: $(date)
+- **Build Host**: $(hostname)
+- **Build User**: $(whoami)
+
+## Environment Information
+- **OS**: $(uname -s)
+- **Architecture**: $(uname -m)
+- **Python Version**: $(python --version 2>&1 || echo "Not available")
+- **Git Commit**: $(git rev-parse HEAD 2>/dev/null || echo "Not available")
+- **Git Branch**: $(git branch --show-current 2>/dev/null || echo "Not available")
+
+## Build Status
+
+EOF
+
+    # Check client build status
+    local client_status=$(check_build_status "Client" "r2midi_client/dist")
+    echo "### R2MIDI Client: $client_status" >> "$summary_file"
+    echo "" >> "$summary_file"
+    list_build_artifacts "r2midi_client/dist" "" >> "$summary_file"
+    echo "" >> "$summary_file"
+    
+    # Check server build status
+    local server_status_1=$(check_build_status "Server" "dist")
+    local server_status_2=$(check_build_status "Server" "server/dist")
+    
+    if [ "$server_status_1" = "✅ SUCCESS" ] || [ "$server_status_2" = "✅ SUCCESS" ]; then
+        echo "### R2MIDI Server: ✅ SUCCESS" >> "$summary_file"
+    else
+        echo "### R2MIDI Server: ❌ FAILED" >> "$summary_file"
+    fi
+    echo "" >> "$summary_file"
+    
+    if [ -d "dist" ]; then
+        list_build_artifacts "dist" "" >> "$summary_file"
+    elif [ -d "server/dist" ]; then
+        list_build_artifacts "server/dist" "" >> "$summary_file"
+    else
+        echo "No server build artifacts found" >> "$summary_file"
+    fi
+    echo "" >> "$summary_file"
+    
+    # Check packaging artifacts
+    if [ -d "artifacts" ] && [ "$(ls -A artifacts/ 2>/dev/null | grep -v BUILD_SUMMARY)" ]; then
+        echo "## Package Artifacts" >> "$summary_file"
+        echo "" >> "$summary_file"
+        find artifacts -maxdepth 1 -type f ! -name "BUILD_SUMMARY*" | while read -r file; do
+            local size=$(get_file_size "$file")
+            local checksum=$(get_file_checksum "$file")
+            echo "- $(basename "$file") ($size)" >> "$summary_file"
+            if [ "$checksum" != "N/A" ]; then
+                echo "  - SHA256: $checksum" >> "$summary_file"
+            fi
+        done
+        echo "" >> "$summary_file"
+    fi
+    
+    # Add build logs if available
+    if [ -f "build_summary.txt" ]; then
+        echo "## Build Log Summary" >> "$summary_file"
+        echo "" >> "$summary_file"
+        echo "\`\`\`" >> "$summary_file"
+        cat "build_summary.txt" >> "$summary_file"
+        echo "\`\`\`" >> "$summary_file"
+        echo "" >> "$summary_file"
+    fi
+    
+    # Add validation reports if available
+    if [ -f "build_environment_report.txt" ]; then
+        echo "## Build Environment Report" >> "$summary_file"
+        echo "" >> "$summary_file"
+        echo "\`\`\`" >> "$summary_file"
+        cat "build_environment_report.txt" >> "$summary_file"
+        echo "\`\`\`" >> "$summary_file"
+        echo "" >> "$summary_file"
+    fi
+    
+    # Overall build result
+    echo "## Overall Result" >> "$summary_file"
+    echo "" >> "$summary_file"
+    
+    if [ "$client_status" = "✅ SUCCESS" ] && ([ "$server_status_1" = "✅ SUCCESS" ] || [ "$server_status_2" = "✅ SUCCESS" ]); then
+        echo "🎉 **BUILD SUCCESSFUL** - All components built successfully!" >> "$summary_file"
+        echo "" >> "$summary_file"
+        echo "The build completed without errors and all artifacts are ready for distribution." >> "$summary_file"
+    else
+        echo "💥 **BUILD FAILED** - Some components failed to build!" >> "$summary_file"
+        echo "" >> "$summary_file"
+        echo "Please check the build logs above for details on what went wrong." >> "$summary_file"
+    fi
+    
+    echo "✅ Build summary generated: $summary_file"
+}
+
+# Generate GitHub Actions summary
+generate_github_summary() {
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        echo "📋 Updating GitHub Actions step summary..."
         
-        if [ "$found" = false ]; then
-            echo "- No artifacts found"
-        fi
-    else
-        echo "- Artifacts directory not found"
-    fi
-}
-
-# Function to get build tool info
-get_build_tool() {
-    if command -v briefcase >/dev/null 2>&1; then
-        echo "Briefcase"
-    else
-        echo "Custom build"
-    fi
-}
-
-# Function to get detailed signing information
-get_signing_details() {
-    case "$PLATFORM-$SIGNING_STATUS" in
-        macos-signed|macos-notarized)
-            echo "Apple Developer ID (signed & notarized)"
-            ;;
-        macos-unsigned)
-            echo "Unsigned (development build)"
-            ;;
-        windows-signed)
-            echo "Code signed with certificate"
-            ;;
-        windows-unsigned)
-            echo "Unsigned (as requested)"
-            ;;
-        linux-unsigned|python-unsigned)
-            echo "Unsigned (standard for $PLATFORM)"
-            ;;
-        *)
-            echo "Unknown signing status"
-            ;;
-    esac
-}
-
-# Generate the build summary for GitHub Actions
-if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    cat >> "$GITHUB_STEP_SUMMARY" << EOF
-## $(get_platform_emoji "$PLATFORM") $PLATFORM Build Complete
-
-**Version:** $VERSION  
-**Build Type:** $BUILD_TYPE  
-**Signing:** $(get_signing_emoji "$SIGNING_STATUS") $(get_signing_details)  
-**Build Tool:** $(get_build_tool)  
-EOF
-
-    # Add platform-specific information
-    case "$PLATFORM" in
-        macos)
-            cat >> "$GITHUB_STEP_SUMMARY" << EOF
-**Packaging:** DMG + PKG installers  
-**Gatekeeper:** Compatible with all macOS security settings  
-EOF
-            ;;
-        windows)
-            cat >> "$GITHUB_STEP_SUMMARY" << EOF
-**Packaging:** ZIP portable + MSI installers  
-**Security Warning:** Expected for unsigned applications  
-EOF
-            ;;
-        linux)
-            cat >> "$GITHUB_STEP_SUMMARY" << EOF
-**Packaging:** DEB + TAR.GZ + AppImage  
-**Distribution:** Compatible with most Linux distributions  
-EOF
-            ;;
-        python)
-            cat >> "$GITHUB_STEP_SUMMARY" << EOF
-**Packaging:** Wheel + Source distribution  
-**PyPI:** Ready for upload  
-EOF
-            ;;
-    esac
-
-    # List created packages/artifacts
-    echo "" >> "$GITHUB_STEP_SUMMARY"
-    echo "### 📦 Created Packages:" >> "$GITHUB_STEP_SUMMARY"
-    
-    case "$PLATFORM" in
-        macos)
-            list_artifacts "artifacts" "*.dmg" >> "$GITHUB_STEP_SUMMARY"
-            list_artifacts "artifacts" "*.pkg" >> "$GITHUB_STEP_SUMMARY"
-            ;;
-        windows)
-            list_artifacts "artifacts" "*.zip" >> "$GITHUB_STEP_SUMMARY"
-            list_artifacts "artifacts" "*.msi" >> "$GITHUB_STEP_SUMMARY"
-            ;;
-        linux)
-            list_artifacts "artifacts" "*.deb" >> "$GITHUB_STEP_SUMMARY"
-            list_artifacts "artifacts" "*.tar.gz" >> "$GITHUB_STEP_SUMMARY"
-            list_artifacts "artifacts" "*.AppImage" >> "$GITHUB_STEP_SUMMARY"
-            ;;
-        python)
-            list_artifacts "dist" "*.whl" >> "$GITHUB_STEP_SUMMARY"
-            list_artifacts "dist" "*.tar.gz" >> "$GITHUB_STEP_SUMMARY"
-            ;;
-        *)
-            list_artifacts "artifacts" "*" >> "$GITHUB_STEP_SUMMARY"
-            ;;
-    esac
-    
-    # Add build metrics if available
-    if [ -d "artifacts" ] || [ -d "dist" ]; then
+        echo "## 🏗️ Build Summary ($PLATFORM)" >> "$GITHUB_STEP_SUMMARY"
         echo "" >> "$GITHUB_STEP_SUMMARY"
-        echo "### 📊 Build Metrics:" >> "$GITHUB_STEP_SUMMARY"
+        echo "| Component | Status | Artifacts |" >> "$GITHUB_STEP_SUMMARY"
+        echo "|-----------|--------|-----------|" >> "$GITHUB_STEP_SUMMARY"
         
-        # Calculate total size
-        local total_size="Unknown"
-        if [ -d "artifacts" ]; then
-            total_size=$(du -sh artifacts/ 2>/dev/null | cut -f1 || echo "Unknown")
-        elif [ -d "dist" ]; then
-            total_size=$(du -sh dist/ 2>/dev/null | cut -f1 || echo "Unknown")
+        # Client status
+        local client_status=$(check_build_status "Client" "r2midi_client/dist")
+        local client_artifacts="N/A"
+        if [ -d "r2midi_client/dist" ]; then
+            client_artifacts=$(find r2midi_client/dist -type f | wc -l)
         fi
+        echo "| R2MIDI Client | $client_status | $client_artifacts files |" >> "$GITHUB_STEP_SUMMARY"
         
-        echo "- **Total package size:** $total_size" >> "$GITHUB_STEP_SUMMARY"
-        echo "- **Build time:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_STEP_SUMMARY"
-        echo "- **Runner OS:** $(uname -s) $(uname -m)" >> "$GITHUB_STEP_SUMMARY"
+        # Server status
+        local server_status_1=$(check_build_status "Server" "dist")
+        local server_status_2=$(check_build_status "Server" "server/dist")
+        local server_artifacts="N/A"
+        
+        if [ "$server_status_1" = "✅ SUCCESS" ] || [ "$server_status_2" = "✅ SUCCESS" ]; then
+            local server_status="✅ SUCCESS"
+            if [ -d "dist" ]; then
+                server_artifacts=$(find dist -type f | wc -l)
+            elif [ -d "server/dist" ]; then
+                server_artifacts=$(find server/dist -type f | wc -l)
+            fi
+        else
+            local server_status="❌ FAILED"
+        fi
+        echo "| R2MIDI Server | $server_status | $server_artifacts files |" >> "$GITHUB_STEP_SUMMARY"
+        
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "**Build Details:**" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Platform: $PLATFORM" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Version: $VERSION" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Build Type: $BUILD_TYPE" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Signing: $SIGNING_MODE" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
     fi
-fi
+}
 
-# Generate detailed build report file
-cat > "build_summary_${PLATFORM}.txt" << EOF
+# Generate JSON summary for automation
+generate_json_summary() {
+    local json_file="artifacts/build_summary_${PLATFORM}.json"
+    
+    # Check build statuses
+    local client_success=false
+    local server_success=false
+    
+    if check_build_status "Client" "r2midi_client/dist" >/dev/null; then
+        client_success=true
+    fi
+    
+    if check_build_status "Server" "dist" >/dev/null || check_build_status "Server" "server/dist" >/dev/null; then
+        server_success=true
+    fi
+    
+    cat > "$json_file" << EOF
+{
+  "platform": "$PLATFORM",
+  "buildType": "$BUILD_TYPE",
+  "version": "$VERSION",
+  "signingMode": "$SIGNING_MODE",
+  "buildDate": "$(date -u '+%Y-%m-%d %H:%M:%S UTC')",
+  "buildHost": "$(hostname)",
+  "gitCommit": "$(git rev-parse HEAD 2>/dev/null || echo 'unknown')",
+  "gitBranch": "$(git branch --show-current 2>/dev/null || echo 'unknown')",
+  "components": {
+    "client": {
+      "success": $client_success,
+      "artifactsPath": "r2midi_client/dist"
+    },
+    "server": {
+      "success": $server_success,
+      "artifactsPath": "$([ -d "dist" ] && echo "dist" || echo "server/dist")"
+    }
+  },
+  "overallSuccess": $([ "$client_success" = true ] && [ "$server_success" = true ] && echo true || echo false)
+}
+EOF
+    
+    echo "✅ JSON summary generated: $json_file"
+}
+
+# Main function
+main() {
+    echo "🚀 Starting build summary generation..."
+    
+    # Generate different types of summaries
+    generate_main_summary
+    generate_github_summary
+    generate_json_summary
+    
+    # Create a simple text summary for quick reference
+    local quick_summary="artifacts/quick_summary_${PLATFORM}.txt"
+    cat > "$quick_summary" << EOF
 R2MIDI Build Summary - $PLATFORM
-===============================
+================================
+Version: $VERSION
+Build Type: $BUILD_TYPE
+Date: $(date)
 
-Build Information:
-- Platform: $PLATFORM
-- Version: $VERSION
-- Build Type: $BUILD_TYPE
-- Signing Status: $SIGNING_STATUS
-- Build Tool: $(get_build_tool)
-- Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-- Runner: $(uname -s) $(uname -m)
+Client: $(check_build_status "Client" "r2midi_client/dist")
+Server: $(if check_build_status "Server" "dist" >/dev/null || check_build_status "Server" "server/dist" >/dev/null; then echo "✅ SUCCESS"; else echo "❌ FAILED"; fi)
 
-Signing Details:
-$(get_signing_details)
-
-Created Artifacts:
+Artifacts: $(find artifacts -maxdepth 1 -type f ! -name "*summary*" | wc -l) files
 EOF
+    
+    echo "✅ Quick summary generated: $quick_summary"
+    
+    # List all generated summaries
+    echo ""
+    echo "📋 Generated summary files:"
+    find artifacts -name "*summary*" -o -name "BUILD_SUMMARY*" | while read -r file; do
+        echo "  - $file"
+    done
+    
+    echo ""
+    echo "🎉 Build summary generation completed!"
+}
 
-# Add artifacts to the report
-case "$PLATFORM" in
-    macos)
-        echo "DMG Files:" >> "build_summary_${PLATFORM}.txt"
-        list_artifacts "artifacts" "*.dmg" >> "build_summary_${PLATFORM}.txt"
-        echo "" >> "build_summary_${PLATFORM}.txt"
-        echo "PKG Files:" >> "build_summary_${PLATFORM}.txt"
-        list_artifacts "artifacts" "*.pkg" >> "build_summary_${PLATFORM}.txt"
-        ;;
-    windows)
-        echo "ZIP Files:" >> "build_summary_${PLATFORM}.txt"
-        list_artifacts "artifacts" "*.zip" >> "build_summary_${PLATFORM}.txt"
-        echo "" >> "build_summary_${PLATFORM}.txt"
-        echo "MSI Files:" >> "build_summary_${PLATFORM}.txt"
-        list_artifacts "artifacts" "*.msi" >> "build_summary_${PLATFORM}.txt"
-        ;;
-    linux)
-        echo "DEB Packages:" >> "build_summary_${PLATFORM}.txt"
-        list_artifacts "artifacts" "*.deb" >> "build_summary_${PLATFORM}.txt"
-        echo "" >> "build_summary_${PLATFORM}.txt"
-        echo "TAR.GZ Archives:" >> "build_summary_${PLATFORM}.txt"
-        list_artifacts "artifacts" "*.tar.gz" >> "build_summary_${PLATFORM}.txt"
-        echo "" >> "build_summary_${PLATFORM}.txt"
-        echo "AppImage Files:" >> "build_summary_${PLATFORM}.txt"
-        list_artifacts "artifacts" "*.AppImage" >> "build_summary_${PLATFORM}.txt"
-        ;;
-    python)
-        echo "Wheel Files:" >> "build_summary_${PLATFORM}.txt"
-        list_artifacts "dist" "*.whl" >> "build_summary_${PLATFORM}.txt"
-        echo "" >> "build_summary_${PLATFORM}.txt"
-        echo "Source Distributions:" >> "build_summary_${PLATFORM}.txt"
-        list_artifacts "dist" "*.tar.gz" >> "build_summary_${PLATFORM}.txt"
-        ;;
-    *)
-        echo "All Files:" >> "build_summary_${PLATFORM}.txt"
-        list_artifacts "artifacts" "*" >> "build_summary_${PLATFORM}.txt"
-        ;;
-esac
-
-# Add platform-specific notes
-cat >> "build_summary_${PLATFORM}.txt" << EOF
-
-Platform-Specific Notes:
-EOF
-
-case "$PLATFORM" in
-    macos)
-        cat >> "build_summary_${PLATFORM}.txt" << EOF
-- DMG files provide drag-and-drop installation
-- PKG files provide automated installation with system integration
-- All applications are signed and notarized for security
-- Compatible with all macOS security settings (no warnings)
-EOF
-        ;;
-    windows)
-        cat >> "build_summary_${PLATFORM}.txt" << EOF
-- ZIP files are portable applications (no installation required)
-- MSI files provide traditional Windows installer experience
-- Applications are unsigned - security warnings are expected
-- Windows Defender may need approval for unsigned applications
-EOF
-        ;;
-    linux)
-        cat >> "build_summary_${PLATFORM}.txt" << EOF
-- DEB packages work with Debian/Ubuntu and derivatives
-- TAR.GZ archives work with any Linux distribution
-- AppImage files are universal and self-contained
-- Most Linux software is unsigned - no security warnings expected
-EOF
-        ;;
-    python)
-        cat >> "build_summary_${PLATFORM}.txt" << EOF
-- Wheel files provide fast installation across platforms
-- Source distributions allow custom compilation
-- Compatible with pip and other Python package managers
-- Ready for PyPI upload and distribution
-EOF
-        ;;
-esac
-
-echo "✅ Build summary generated for $PLATFORM"
-echo "📋 Summary files created:"
-echo "   - GitHub Actions Step Summary (in workflow)"
-echo "   - build_summary_${PLATFORM}.txt (detailed report)"
-
-# Output key information for other scripts
-echo "PLATFORM=$PLATFORM"
-echo "VERSION=$VERSION"
-echo "BUILD_TYPE=$BUILD_TYPE"
-echo "SIGNING_STATUS=$SIGNING_STATUS"
+# Run main function
+main "$@"

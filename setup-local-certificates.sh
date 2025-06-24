@@ -101,67 +101,75 @@ verify_certificate_files() {
     log_success "All certificate files found"
 }
 
-# Test certificate passwords
+# Test certificate passwords (keychain-free version)
 test_certificate_passwords() {
     log_info "Testing certificate passwords..."
 
     local cert_dir="$PROJECT_ROOT/$P12_PATH"
-    local temp_keychain="test-certs-$(date +%s).keychain"
 
-    # Create temporary keychain for testing
-    security create-keychain -p "test-password" "$temp_keychain"
-
-    # Test app certificate
-    if security import "$cert_dir/app_cert.p12" -k "$temp_keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign 2>/dev/null; then
+    # Test app certificate password using OpenSSL
+    if openssl pkcs12 -in "$cert_dir/app_cert.p12" -passin "pass:$P12_PASSWORD" -noout -legacy 2>/dev/null; then
         log_success "Application certificate password verified"
     else
         log_error "Application certificate password failed"
         log_error "Check that the p12_password in app_config.json is correct"
-        security delete-keychain "$temp_keychain" 2>/dev/null || true
         exit 1
     fi
 
-    # Test installer certificate
-    if security import "$cert_dir/installer_cert.p12" -k "$temp_keychain" -P "$P12_PASSWORD" -T /usr/bin/productsign 2>/dev/null; then
+    # Test installer certificate password using OpenSSL
+    if openssl pkcs12 -in "$cert_dir/installer_cert.p12" -passin "pass:$P12_PASSWORD" -noout -legacy 2>/dev/null; then
         log_success "Installer certificate password verified"
     else
         log_error "Installer certificate password failed"
         log_error "Check that the p12_password in app_config.json is correct"
-        security delete-keychain "$temp_keychain" 2>/dev/null || true
         exit 1
     fi
-
-    # Clean up test keychain
-    security delete-keychain "$temp_keychain" 2>/dev/null || true
 
     log_success "All certificate passwords verified"
 }
 
-# Check certificate validity and details (simplified version)
+# Check certificate validity and details (keychain-free version)
 check_certificate_details() {
     log_info "Checking certificate details..."
 
-    # Use system keychain to check certificates
-    local app_cert_info
-    app_cert_info=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1)
+    local cert_dir="$PROJECT_ROOT/$P12_PATH"
 
-    if [ -n "$app_cert_info" ]; then
-        local app_cert_name=$(echo "$app_cert_info" | sed 's/.*"\(.*\)".*/\1/')
-        log_success "Application Certificate: $app_cert_name"
-        log_success "  Certificate is valid"
+    # Check application certificate using OpenSSL
+    if [ -f "$cert_dir/app_cert.p12" ]; then
+        local app_cert_subject=$(openssl pkcs12 -in "$cert_dir/app_cert.p12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | sed 's/.*CN[[:space:]]*=[[:space:]]*//' | sed 's/[[:space:]]*,.*//' || echo "")
+        if [ -n "$app_cert_subject" ]; then
+            log_success "Application Certificate: $app_cert_subject"
+
+            # Check validity dates
+            local validity=$(openssl pkcs12 -in "$cert_dir/app_cert.p12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | openssl x509 -noout -dates 2>/dev/null || echo "")
+            if echo "$validity" | grep -q "notAfter"; then
+                local not_after=$(echo "$validity" | grep "notAfter" | sed 's/notAfter=//')
+                log_success "  Valid until: $not_after"
+            fi
+        else
+            log_warning "Could not read application certificate details"
+        fi
     else
-        log_warning "No application certificate found in system keychain"
+        log_warning "Application certificate file not found"
     fi
 
-    # Check for installer certificate
-    local installer_cert_info
-    installer_cert_info=$(security find-identity -v -p codesigning | grep "Developer ID Installer" | head -1 || true)
+    # Check installer certificate using OpenSSL
+    if [ -f "$cert_dir/installer_cert.p12" ]; then
+        local installer_cert_subject=$(openssl pkcs12 -in "$cert_dir/installer_cert.p12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | sed 's/.*CN[[:space:]]*=[[:space:]]*//' | sed 's/[[:space:]]*,.*//' || echo "")
+        if [ -n "$installer_cert_subject" ]; then
+            log_success "Installer Certificate: $installer_cert_subject"
 
-    if [ -n "$installer_cert_info" ]; then
-        local installer_cert_name=$(echo "$installer_cert_info" | sed 's/.*"\(.*\)".*/\1/')
-        log_success "Installer Certificate: $installer_cert_name"
+            # Check validity dates
+            local validity=$(openssl pkcs12 -in "$cert_dir/installer_cert.p12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | openssl x509 -noout -dates 2>/dev/null || echo "")
+            if echo "$validity" | grep -q "notAfter"; then
+                local not_after=$(echo "$validity" | grep "notAfter" | sed 's/notAfter=//')
+                log_success "  Valid until: $not_after"
+            fi
+        else
+            log_warning "Could not read installer certificate details"
+        fi
     else
-        log_warning "No installer certificate found in system keychain"
+        log_warning "Installer certificate file not found"
     fi
 
     log_success "Team ID verification: $TEAM_ID"

@@ -3,6 +3,12 @@ set -euo pipefail
 # build-all-local.sh - R2MIDI build system with proper signing
 # Usage: ./build-all-local.sh [options]
 
+# Source common certificate setup
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SOURCE_DIR/scripts/common-certificate-setup.sh" ]; then
+    source "$SOURCE_DIR/scripts/common-certificate-setup.sh"
+fi
+
 echo "🚀 R2MIDI Build System"
 echo "==============================="
 
@@ -22,6 +28,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dev)
             BUILD_TYPE="dev"
+            shift
+            ;;
+        --staging)
+            BUILD_TYPE="staging"
             shift
             ;;
         --no-sign)
@@ -45,6 +55,7 @@ Usage: $0 [options]
 Options:
   --version VERSION    Specify version (auto-detected if not provided)
   --dev               Development build (faster, less verification)
+  --staging           Staging build (production-like with full verification)
   --no-sign           Skip code signing
   --no-notarize       Skip notarization
   --clean             Clean previous builds first
@@ -54,6 +65,7 @@ Examples:
   $0                                  # Build everything with auto-detected version
   $0 --version 1.2.3                # Build with specific version
   $0 --dev --no-notarize            # Fast development build
+  $0 --staging --version 1.2.3      # Staging build with full verification
   $0 --clean                        # Clean build
 
 Supports both local development and GitHub Actions environments.
@@ -308,7 +320,7 @@ check_environment() {
 }
 
 # Setup certificates - GitHub Actions vs Local
-setup_certificates() {
+setup_build_certificates() {
     local start_time=$(start_timer)
     log_step "Setting Up Certificates"
 
@@ -318,8 +330,15 @@ setup_certificates() {
         log_info "Using GitHub Actions certificate setup..."
         setup_github_certificates
     else
-        log_info "Using local certificate setup..."
-        setup_local_certificates
+        log_info "Using common certificate setup..."
+        # The common certificate setup script is already sourced at the top of this file
+        # Call the common setup function with skip_signing parameter
+        local skip_signing_param="$SKIP_SIGNING"
+        if [ "$skip_signing_param" = "true" ]; then
+            setup_certificates "true"
+        else
+            setup_certificates "false"
+        fi
     fi
 
     local duration=$(end_timer "$start_time" "Certificate Setup")
@@ -696,8 +715,8 @@ enhanced_signing() {
     log_step "Signing and Notarization"
 
     # Check if signing script exists
-    if [ ! -f ".github/scripts/sign-and-notarize-macos.sh" ]; then
-        log_warning "Signing script not found at .github/scripts/sign-and-notarize-macos.sh"
+    if [ ! -f ".github/scripts/sign-notarize.sh" ]; then
+        log_warning "Signing script not found at .github/scripts/sign-notarize.sh"
         log_warning "Signing was handled by individual build scripts"
         return 0
     fi
@@ -713,9 +732,9 @@ enhanced_signing() {
         sign_args="$sign_args --skip-notarize"
     fi
 
-    log_info "Running signing and notarization: ./.github/scripts/sign-and-notarize-macos.sh $sign_args"
+    log_info "Running signing and notarization: ./.github/scripts/sign-notarize.sh $sign_args"
 
-    if ./.github/scripts/sign-and-notarize-macos.sh $sign_args; then
+    if ./.github/scripts/sign-notarize.sh $sign_args; then
         log_success "Signing and notarization completed"
         return 0
     else
@@ -895,7 +914,7 @@ main() {
     # Step 4: Certificate setup
     current_step=$((current_step + 1))
     log_progress "$current_step" "$total_steps" "Setting Up Certificates"
-    setup_certificates
+    setup_build_certificates
 
     # Create artifacts directory
     log_info "Creating artifacts directory..."
@@ -956,6 +975,11 @@ main() {
     # Final summary with comprehensive statistics
     local overall_duration=$(end_timer "$overall_start_time" "Complete Build Process")
     log_step "Build Summary"
+
+    # Show certificate summary if available
+    if [ "$(type -t get_certificate_summary 2>/dev/null)" = "function" ]; then
+        get_certificate_summary
+    fi
 
     # Count artifacts
     local pkg_count=0

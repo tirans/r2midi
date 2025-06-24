@@ -96,12 +96,12 @@ jobs:
           # Specifically ensure bulletproof cleaner is executable
           [ -f scripts/bulletproof_clean_app_bundle.py ] && chmod +x scripts/bulletproof_clean_app_bundle.py || true
           # Ensure emergency cleaner is executable
-          [ -f .github/scripts/emergency-clean-app.sh ] && chmod +x .github/scripts/emergency-clean-app.sh || true
+          [ -f .github/scripts/clean-app.sh ] && chmod +x .github/scripts/clean-app.sh || true
 
       - name: Detect runner environment
         shell: bash
         run: |
-          ./.github/scripts/detect-runner-environment.sh
+          ./.github/scripts/detect-runner.sh
           if [ -f .runner_environment ]; then
             source .runner_environment
             echo "Runner type: IS_SELF_HOSTED=$IS_SELF_HOSTED"

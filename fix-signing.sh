@@ -15,25 +15,21 @@ cd "$SCRIPT_DIR"
 echo "Step 1: Making scripts executable..."
 chmod +x scripts/bulletproof_clean_app_bundle.py
 chmod +x scripts/clean-app-bundles.sh
-chmod +x scripts/fix_macos_signing_issue.py
 chmod +x build-all-local.sh
 chmod +x build-client-local.sh
 chmod +x build-server-local.sh
 chmod +x setup-local-certificates.sh
 chmod +x clean-for-signing.sh
 chmod +x emergency-fix-python-framework.sh
+chmod +x .github/scripts/emergency-clean-app.sh
+chmod +x test-signing-environment.sh
 echo "✅ Scripts are now executable"
 echo ""
 
-# Step 2: Run the fix implementation
-echo "Step 2: Implementing signing fixes..."
-python3 scripts/fix_macos_signing_issue.py
-echo ""
-
-# Step 3: Clean any existing app bundles
-echo "Step 3: Cleaning existing app bundles..."
+# Step 2: Clean any existing app bundles
+echo "Step 2: Cleaning existing app bundles..."
 if [ -d "build_client/dist" ] || [ -d "build_server/dist" ]; then
-    python3 scripts/clean-app-bundles.sh || true
+    ./scripts/clean-app-bundles.sh || true
 fi
 echo ""
 

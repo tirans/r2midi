@@ -448,6 +448,8 @@ Key security features:
 
 For detailed information about required GitHub secrets for macOS signing and PyPI publishing, see the [GitHub Secrets Guide](docs/github_secrets_guide.md).
 
+For comprehensive instructions on creating signed and notarized macOS PKG installers, see the [macOS PKG Signing Guide](MACOS_PKG_SIGNING_GUIDE.md).
+
 For detailed security information, see [.github/SECURITY_AUDIT.md](.github/SECURITY_AUDIT.md).
 
 ## Contributing

@@ -5,6 +5,13 @@
 
 set -euo pipefail
 
+# Make the common certificate setup script executable
+chmod +x scripts/common-certificate-setup.sh 2>/dev/null || true
+
+# Source common certificate setup
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SOURCE_DIR/scripts/common-certificate-setup.sh"
+
 # Default values
 VERSION=""
 SKIP_SIGNING=false
@@ -136,6 +143,8 @@ else
         find build -type f 2>/dev/null | head -10
     fi
     deactivate
+    cleanup_certificates
+    print_build_summary "R2MIDI Server" "failed" "Build failed during py2app compilation"
     exit 1
 fi
 
@@ -154,6 +163,8 @@ else
     echo "📁 dist/ directory contents:"
     ls -la dist/ || echo "dist/ directory not found"
     deactivate
+    cleanup_certificates
+    print_build_summary "R2MIDI Server" "failed" "App bundle not found after build"
     exit 1
 fi
 
@@ -184,13 +195,16 @@ if command -v du >/dev/null 2>&1; then
     echo "📦 App bundle size: $app_size"
 fi
 
-# Code signing and notarization (if not skipped)
-if [ "$SKIP_SIGNING" = "false" ]; then
+# Setup certificates before signing
+setup_certificates "$SKIP_SIGNING"
+
+# Code signing and notarization (if not skipped and certificates available)
+if [ "$SKIP_SIGNING" = "false" ] && [ "$CERT_LOADED" = "true" ]; then
     echo ""
     echo "🔐 Starting signing and notarization..."
 
     # Check if signing script exists
-    if [ -f "../.github/scripts/sign-and-notarize-macos.sh" ]; then
+    if [ -f "../.github/scripts/sign-notarize.sh" ]; then
         echo "📋 Using signing script"
 
         # Build arguments for signing script
@@ -206,11 +220,12 @@ if [ "$SKIP_SIGNING" = "false" ]; then
 
         # Run signing from project root
         cd ..
-        if ./.github/scripts/sign-and-notarize-macos.sh $sign_args; then
+        if ./.github/scripts/sign-notarize.sh $sign_args; then
             echo "✅ Signing and notarization completed"
         else
             echo "❌ Signing failed"
             if [ "$BUILD_TYPE" != "dev" ]; then
+                cleanup_certificates
                 exit 1
             fi
         fi
@@ -218,10 +233,9 @@ if [ "$SKIP_SIGNING" = "false" ]; then
     else
         echo "⚠️ Signing script not found, using basic signing"
 
-        # Fallback to basic signing
-        SIGNING_IDENTITY="Developer ID Application"
-        if security find-identity -v -p codesigning | grep -q "$SIGNING_IDENTITY"; then
-            echo "✅ Found signing identity: $SIGNING_IDENTITY"
+        # Use certificate identity from common setup
+        if [ -n "$CERT_IDENTITY" ]; then
+            echo "✅ Using signing identity: $CERT_IDENTITY"
 
             # Create basic entitlements
             cat > entitlements.plist << EOF
@@ -243,7 +257,7 @@ if [ "$SKIP_SIGNING" = "false" ]; then
 </plist>
 EOF
 
-            codesign --force --options runtime --entitlements entitlements.plist --deep --sign "$SIGNING_IDENTITY" "$APP_PATH"
+            codesign --force --options runtime --entitlements entitlements.plist --deep --sign "$CERT_IDENTITY" "$APP_PATH"
 
             # Create PKG installer
             PKG_NAME="R2MIDI-Server-${VERSION}.pkg"
@@ -255,13 +269,51 @@ EOF
                      --component "dist/R2MIDI Server.app" \
                      "$INSTALLER_PATH"
 
+            # Sign and notarize the PKG
+            echo "🔐 Signing and notarizing PKG..."
+            if [ -f "../.github/scripts/sign-pkg.sh" ]; then
+                if "../.github/scripts/sign-pkg.sh" --pkg "$INSTALLER_PATH"; then
+                    echo "✅ PKG signed and notarized successfully"
+                else
+                    echo "⚠️ PKG signing/notarization failed, but continuing..."
+                fi
+            else
+                echo "⚠️ PKG signing script not found, skipping PKG signing"
+            fi
+
             echo "✅ Basic signing completed"
         else
-            echo "⚠️ No signing identity found - creating unsigned build"
+            echo "⚠️ No valid certificate loaded - creating unsigned build"
+
+            # Create PKG installer even without signing
+            PKG_NAME="R2MIDI-Server-${VERSION}.pkg"
+            INSTALLER_PATH="artifacts/${PKG_NAME}"
+
+            pkgbuild --identifier "com.r2midi.server" \
+                     --version "$VERSION" \
+                     --install-location "/Applications" \
+                     --component "dist/R2MIDI Server.app" \
+                     "$INSTALLER_PATH"
+
+            # Sign and notarize the PKG (even for unsigned app builds, we can still sign the PKG)
+            echo "🔐 Signing and notarizing PKG..."
+            if [ -f "../.github/scripts/sign-pkg.sh" ]; then
+                if "../.github/scripts/sign-pkg.sh" --pkg "$INSTALLER_PATH"; then
+                    echo "✅ PKG signed and notarized successfully"
+                else
+                    echo "⚠️ PKG signing/notarization failed, but continuing..."
+                fi
+            else
+                echo "⚠️ PKG signing script not found, skipping PKG signing"
+            fi
         fi
     fi
 else
-    echo "⏭️ Skipping code signing"
+    if [ "$SKIP_SIGNING" = "true" ]; then
+        echo "⏭️ Skipping code signing (--no-sign specified)"
+    else
+        echo "⚠️ No valid certificates available - creating unsigned build"
+    fi
 
     # Create unsigned PKG
     echo "📦 Creating unsigned PKG installer..."
@@ -273,6 +325,18 @@ else
              --install-location "/Applications" \
              --component "dist/R2MIDI Server.app" \
              "$INSTALLER_PATH"
+
+    # Sign and notarize the PKG (even for unsigned app builds, we can still sign the PKG)
+    echo "🔐 Signing and notarizing PKG..."
+    if [ -f "../.github/scripts/sign-pkg.sh" ]; then
+        if "../.github/scripts/sign-pkg.sh" --pkg "$INSTALLER_PATH"; then
+            echo "✅ PKG signed and notarized successfully"
+        else
+            echo "⚠️ PKG signing/notarization failed, but continuing..."
+        fi
+    else
+        echo "⚠️ PKG signing script not found, skipping PKG signing"
+    fi
 fi
 
 # Copy artifacts to main artifacts directory
@@ -347,16 +411,17 @@ echo "📄 Build report created: $BUILD_REPORT"
 # Deactivate virtual environment
 deactivate
 
-# Final summary
-echo ""
-echo "✅ R2MIDI Server build completed successfully!"
-echo ""
-echo "📦 Build artifacts:"
-echo "  - App bundle: build_server/$APP_PATH"
-echo "  - PKG installer: artifacts/${PKG_NAME}"
-echo "  - Build report: $BUILD_REPORT"
-echo ""
-echo "🚀 Ready for distribution!"
+# Cleanup certificates
+cleanup_certificates
+
+# Final summary with certificate info
+print_build_summary "R2MIDI Server" "success" "
+📦 Build artifacts:
+  - App bundle: build_server/$APP_PATH
+  - PKG installer: artifacts/${PKG_NAME}
+  - Build report: $BUILD_REPORT
+
+🚀 Ready for distribution!"
 
 # Show next steps
 echo ""
