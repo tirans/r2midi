@@ -3,7 +3,10 @@ import subprocess
 import unittest
 from unittest.mock import MagicMock, call, patch
 
+import pytest
 from server.midi_utils import MidiUtils
+
+pytestmark = pytest.mark.server
 
 
 class TestMidiUtils(unittest.TestCase):

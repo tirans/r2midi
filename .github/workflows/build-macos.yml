@@ -1,4 +1,4 @@
-name: Build macOS (Enhanced Virtual Environments)
+name: Build macOS (Simplified with macOS-Pkg-Builder)
 
 on:
   push:
@@ -36,26 +36,16 @@ on:
         required: true
       APPLE_CERT_PASSWORD:
         required: true
-      APPLE_APP_STORE_CERTIFICATE_P12:
-        required: false
-      APPLE_APP_STORE_CERTIFICATE_PASSWORD:
-        required: false
       APPLE_ID:
         required: true
       APPLE_ID_PASSWORD:
         required: true
       APPLE_TEAM_ID:
         required: true
-      APP_STORE_CONNECT_API_KEY:
-        required: false
-      APP_STORE_CONNECT_ISSUER_ID:
-        required: false
-      APP_STORE_CONNECT_KEY_ID:
-        required: false
 
 jobs:
-  build-macos-signed:
-    name: 🍎 Enhanced macOS Build
+  build-macos-simplified:
+    name: 🍎 macOS Build (Simplified with macOS-Pkg-Builder)
     runs-on: ${{ inputs.runner-type || 'self-hosted' }}
     timeout-minutes: 45
 
@@ -65,165 +55,204 @@ jobs:
         shell: bash
         run: |
           echo "🧹 Cleaning up self-hosted runner environment..."
+          
           # Clean up old keychains from previous runs
           if security list-keychains -d user | grep -q "r2midi-"; then
             security list-keychains -d user | grep "r2midi-" | sed 's/"//g' | while read keychain; do
               echo "Removing old keychain: $keychain"
               security delete-keychain "$keychain" 2>/dev/null || true
             done
-          else
-            echo "No r2midi keychains found to clean up"
           fi
-          # Clean up old certificates
+          
+          # Clean up certificate files
           rm -rf /tmp/github_certs 2>/dev/null || true
-          rm -rf ~/.appstoreconnect/private_keys/AuthKey_*.p8 2>/dev/null || true
+          
           # Clean up old build artifacts
-          rm -rf build_client build_server 2>/dev/null || true
-          rm -f .local_build_env 2>/dev/null || true
+          rm -rf build_client build_server artifacts 2>/dev/null || true
+          
+          echo "✅ Pre-build cleanup completed"
 
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        shell: bash
+        run: |
+          echo "📦 Installing system dependencies..."
+          
+          # Update pip and install core dependencies
+          python -m pip install --upgrade pip wheel setuptools
+          
+          # Install build dependencies
+          pip install py2app
+          
+          # Install macos-pkg-builder (this is key!)
+          pip install macos-pkg-builder
+          
+          echo "✅ System dependencies installed"
+
       - name: Make scripts executable
         shell: bash
         run: |
+          echo "🔧 Making scripts executable..."
           chmod +x *.sh 2>/dev/null || true
           chmod +x .github/scripts/*.sh 2>/dev/null || true
           chmod +x scripts/*.py 2>/dev/null || true
           chmod +x scripts/*.sh 2>/dev/null || true
-          # Specifically ensure bulletproof cleaner is executable
-          [ -f scripts/bulletproof_clean_app_bundle.py ] && chmod +x scripts/bulletproof_clean_app_bundle.py || true
-          # Ensure emergency cleaner is executable
-          [ -f .github/scripts/clean-app.sh ] && chmod +x .github/scripts/clean-app.sh || true
+          echo "✅ Scripts made executable"
 
-      - name: Detect runner environment
+      - name: Verify macos-pkg-builder installation
         shell: bash
         run: |
-          ./.github/scripts/detect-runner.sh
-          if [ -f .runner_environment ]; then
-            source .runner_environment
-            echo "Runner type: IS_SELF_HOSTED=$IS_SELF_HOSTED"
-          fi
+          echo "🔍 Verifying macOS-Pkg-Builder installation..."
+          python3 -c "
+          try:
+              from macos_pkg_builder import Packages
+              print('✅ macOS-Pkg-Builder is available')
+              print('✅ Packages class imported successfully')
+          except ImportError as e:
+              print(f'❌ macOS-Pkg-Builder import failed: {e}')
+              exit(1)
+          "
 
-      - name: Verify cleaning scripts
-        shell: bash
-        run: |
-          echo "Checking for cleaning scripts..."
-          if [ -f scripts/bulletproof_clean_app_bundle.py ]; then
-            echo "✅ Found bulletproof_clean_app_bundle.py"
-            ls -la scripts/bulletproof_clean_app_bundle.py
-          else
-            echo "❌ bulletproof_clean_app_bundle.py not found!"
-            echo "Contents of scripts directory:"
-            ls -la scripts/ || echo "scripts directory not found"
-          fi
-          echo "Current directory: $(pwd)"
-          echo "Repository structure:"
-          ls -la
-
-      - name: Clean environment (preserve virtual environments)
-        shell: bash
-        run: |
-          echo "🧹 Cleaning build artifacts while preserving virtual environments..."
-          # Clean build artifacts but preserve virtual environments
-          rm -rf build_client build_server 2>/dev/null || true
-          rm -rf build dist artifacts 2>/dev/null || true
-          rm -rf build_native 2>/dev/null || true
-          # Clean Python cache
-          find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-          find . -name "*.pyc" -delete 2>/dev/null || true
-          find . -name "*.pyo" -delete 2>/dev/null || true
-          # Clean py2app cache
-          rm -rf ~/.py2app "$HOME/.py2app" 2>/dev/null || true
-          # Clean setuptools/wheel cache and build artifacts
-          find . -name "*.egg-info" -type d -exec rm -rf {} + 2>/dev/null || true
-          find . -name "*.egg" -delete 2>/dev/null || true
-          echo "✅ Build artifacts cleaned, virtual environments preserved"
-
-      - name: Setup virtual environments
-        shell: bash
-        run: ./setup-virtual-environments.sh --use-uv
-
-      - name: Test environments
-        shell: bash
-        run: ./test_environments.sh
-
-      - name: Test signing environment
-        shell: bash
-        run: |
-          chmod +x test-signing-environment.sh 2>/dev/null || true
-          if [ -f test-signing-environment.sh ]; then
-            ./test-signing-environment.sh
-          else
-            echo "Test script not found"
-          fi
-
-      - name: Build applications
+      - name: Build with simplified system
         shell: bash
         env:
           APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
           APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-          APPLE_APP_STORE_CERTIFICATE_P12: ${{ secrets.APPLE_APP_STORE_CERTIFICATE_P12 }}
-          APPLE_APP_STORE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_APP_STORE_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
-          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          ENABLE_NOTARIZATION: true
-          GITHUB_ACTIONS: true
         run: |
           VERSION="${{ inputs.version || '1.0.0-ci' }}"
           BUILD_TYPE="${{ inputs.build-type || 'production' }}"
-
+          
+          echo "🚀 Starting simplified macOS build..."
+          echo "Version: $VERSION"
+          echo "Build Type: $BUILD_TYPE"
+          
           # Debug: Check if required secrets are available
-          echo "Checking environment variables..."
+          echo "🔍 Checking environment variables..."
           [ -n "$APPLE_DEVELOPER_ID_APPLICATION_CERT" ] && echo "✅ APPLE_DEVELOPER_ID_APPLICATION_CERT is set" || echo "❌ APPLE_DEVELOPER_ID_APPLICATION_CERT is missing"
           [ -n "$APPLE_DEVELOPER_ID_INSTALLER_CERT" ] && echo "✅ APPLE_DEVELOPER_ID_INSTALLER_CERT is set" || echo "❌ APPLE_DEVELOPER_ID_INSTALLER_CERT is missing"
           [ -n "$APPLE_CERT_PASSWORD" ] && echo "✅ APPLE_CERT_PASSWORD is set" || echo "❌ APPLE_CERT_PASSWORD is missing"
-          [ -n "$APPLE_APP_STORE_CERTIFICATE_P12" ] && echo "✅ APPLE_APP_STORE_CERTIFICATE_P12 is set" || echo "⚠️ APPLE_APP_STORE_CERTIFICATE_P12 is not set (optional)"
           [ -n "$APPLE_ID" ] && echo "✅ APPLE_ID is set" || echo "❌ APPLE_ID is missing"
           [ -n "$APPLE_ID_PASSWORD" ] && echo "✅ APPLE_ID_PASSWORD is set" || echo "❌ APPLE_ID_PASSWORD is missing"
           [ -n "$APPLE_TEAM_ID" ] && echo "✅ APPLE_TEAM_ID is set" || echo "❌ APPLE_TEAM_ID is missing"
-
+          
+          # Run the simplified build system
           if [ "$BUILD_TYPE" = "dev" ]; then
-            ./build-all-local.sh --dev --no-sign --version "$VERSION"
-          elif [ "$BUILD_TYPE" = "staging" ]; then
-            ./build-all-local.sh --staging --version "$VERSION"
+            ./build-all-local.sh --dev --version "$VERSION"
           else
-            ./build-all-local.sh --version "$VERSION"
+            ./build-all-local.sh --version "$VERSION" --build-type "$BUILD_TYPE"
+          fi
+
+      - name: Verify build artifacts
+        shell: bash
+        run: |
+          echo "🔍 Verifying build artifacts..."
+          
+          if [ -d "artifacts" ]; then
+            echo "📦 Found artifacts directory:"
+            ls -la artifacts/
+            
+            for pkg in artifacts/*.pkg; do
+              if [ -f "$pkg" ]; then
+                echo ""
+                echo "📋 Checking $(basename "$pkg"):"
+                
+                # Check file size
+                size=$(du -sh "$pkg" | cut -f1)
+                echo "  📏 Size: $size"
+                
+                # Check package signature
+                if pkgutil --check-signature "$pkg" >/dev/null 2>&1; then
+                  echo "  ✅ Package is signed"
+                  
+                  # Get certificate details
+                  pkgutil --check-signature "$pkg" | grep "Certificate" | head -3
+                else
+                  echo "  ⚠️  Package is not signed"
+                fi
+                
+                # Check Gatekeeper assessment
+                if spctl --assess --type install "$pkg" >/dev/null 2>&1; then
+                  echo "  ✅ Package passes Gatekeeper"
+                else
+                  echo "  ⚠️  Package may not pass Gatekeeper"
+                fi
+              fi
+            done
+          else
+            echo "❌ No artifacts directory found"
+            exit 1
           fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-signed-${{ github.run_number }}
-          path: artifacts/
+          name: macos-simplified-${{ github.run_number }}
+          path: |
+            artifacts/
+            logs/
           retention-days: 30
 
-      - name: Post-build cleanup (self-hosted runner)
-        if: always() && contains(inputs.runner-type || 'self-hosted', 'self-hosted')
+      - name: Generate final summary
         shell: bash
         run: |
-          echo "🧹 Cleaning up after build..."
-          # Find and remove temporary keychains created during this build
-          if [ -f .local_build_env ]; then
-            source .local_build_env
-            if [ -n "${TEMP_KEYCHAIN:-}" ]; then
-              echo "Removing keychain: $TEMP_KEYCHAIN"
-              security delete-keychain "$TEMP_KEYCHAIN" 2>/dev/null || true
-            fi
+          echo "📋 Build Summary"
+          echo "=============="
+          echo "Build completed successfully using macOS-Pkg-Builder"
+          echo ""
+          
+          if [ -d "artifacts" ]; then
+            pkg_count=$(find artifacts -name "*.pkg" | wc -l)
+            echo "📦 Generated $pkg_count package(s):"
+            
+            for pkg in artifacts/*.pkg; do
+              if [ -f "$pkg" ]; then
+                size=$(du -sh "$pkg" | cut -f1)
+                name=$(basename "$pkg")
+                
+                # Check signing status
+                if pkgutil --check-signature "$pkg" >/dev/null 2>&1; then
+                  status="✅ Signed"
+                else
+                  status="⚠️  Unsigned"
+                fi
+                
+                echo "  • $name ($size) - $status"
+              fi
+            done
           fi
-          # Clean up certificates
+          
+          echo ""
+          echo "🎉 macOS build completed successfully!"
+          echo "The packages are ready for distribution."
+
+      - name: Post-build cleanup
+        if: always()
+        shell: bash
+        run: |
+          echo "🧹 Performing post-build cleanup..."
+          
+          # Clean up any temporary keychains created by the Python script
+          if security list-keychains -d user | grep -q "r2midi-github"; then
+            security list-keychains -d user | grep "r2midi-github" | sed 's/"//g' | while read keychain; do
+              echo "Removing temporary keychain: $keychain"
+              security delete-keychain "$keychain" 2>/dev/null || true
+            done
+          fi
+          
+          # Clean up certificate files
           rm -rf /tmp/github_certs 2>/dev/null || true
-          rm -rf ~/.appstoreconnect/private_keys/AuthKey_*.p8 2>/dev/null || true
-          # Clean up build files
-          rm -rf build_client build_server 2>/dev/null || true
-          rm -f .local_build_env 2>/dev/null || true
-          # Clean up any python caches
-          find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-          find . -type f -name "*.pyc" -delete 2>/dev/null || true
+          
+          echo "✅ Cleanup completed"

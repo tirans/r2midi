@@ -1,13 +1,14 @@
 # Certificate Setup Report
 
-**Generated:** Tue Jun 24 06:36:14 IDT 2025  
+**Generated:** Sat Jun 28 17:43:01 IDT 2025  
 **Apple ID:** tiran@outlook.com  
 **Team ID:** 79449BGAM5  
 
 ## Certificate Status
 
-- ✅ Application Certificate (app_cert.p12)
-- ✅ Installer Certificate (installer_cert.p12)
+- ✅ Application Certificate (developerID_application.p12)
+- ✅ Installer Certificate (developerID_installer.p12)
+- ✅ Private Key (private_key.p12)
 
 ## Environment Setup
 
@@ -59,9 +60,9 @@ If you need to re-export your certificates:
 
 1. Open Keychain Access
 2. Find your "Developer ID Application" certificate
-3. Right-click → Export → Save as app_cert.p12
+3. Right-click → Export → Save as developerID_application.p12
 4. Find your "Developer ID Installer" certificate  
-5. Right-click → Export → Save as installer_cert.p12
+5. Right-click → Export → Save as developerID_installer.p12
 6. Place both files in: apple_credentials/certificates/
 7. Update the password in app_config.json if needed
 

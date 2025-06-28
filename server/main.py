@@ -1063,6 +1063,43 @@ async def git_remote_sync():
         return {"status": "error", "message": message}
 
 
+def get_all_ipv4_addresses():
+    """Get all IPv4 addresses of the machine"""
+    addresses = []
+    try:
+        # Get hostname
+        hostname = socket.gethostname()
+        
+        # Get all addresses for this host
+        addrs = socket.getaddrinfo(hostname, None, socket.AF_INET)
+        for addr in addrs:
+            ip = addr[4][0]
+            if ip not in addresses and ip != '127.0.0.1':
+                addresses.append(ip)
+        
+        # Also try to get network interfaces
+        try:
+            # Connect to a remote address to find local IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            if local_ip not in addresses and local_ip != '127.0.0.1':
+                addresses.append(local_ip)
+        except:
+            pass
+            
+        # Always include localhost
+        if '127.0.0.1' not in addresses:
+            addresses.append('127.0.0.1')
+            
+    except Exception as e:
+        logger.warning(f"Could not determine IP addresses: {e}")
+        addresses = ['127.0.0.1']
+    
+    return addresses
+
+
 def main():
     """Main entry point for the server application"""
     run_server()
@@ -1085,8 +1122,10 @@ def run_server():
     logger.info(f"Starting server on port {port}...")
 
     # Add a log message to indicate server is about to start
+    addresses = get_all_ipv4_addresses()
+    address_list = '\n'.join([f"  http://{addr}:{port}" for addr in addresses])
     print(
-        f"\n{'='*50}\nServer is starting on http://0.0.0.0:{port}\nPress Ctrl+C to stop\n{'='*50}\n"
+        f"\n{'='*50}\nServer is starting on:\n{address_list}\nPress Ctrl+C to stop\n{'='*50}\n"
     )
 
     # Configure uvicorn logging to use our logging setup

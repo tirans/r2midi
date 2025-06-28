@@ -80,12 +80,16 @@ verify_certificate_files() {
     local cert_dir="$PROJECT_ROOT/$P12_PATH"
     local missing_files=()
 
-    if [ ! -f "$cert_dir/app_cert.p12" ]; then
-        missing_files+=("app_cert.p12")
+    if [ ! -f "$cert_dir/developerID_application.p12" ]; then
+        missing_files+=("developerID_application.p12")
     fi
 
-    if [ ! -f "$cert_dir/installer_cert.p12" ]; then
-        missing_files+=("installer_cert.p12")
+    if [ ! -f "$cert_dir/developerID_installer.p12" ]; then
+        missing_files+=("developerID_installer.p12")
+    fi
+
+    if [ ! -f "$cert_dir/private_key.p12" ]; then
+        missing_files+=("private_key.p12")
     fi
 
     if [ ${#missing_files[@]} -gt 0 ]; then
@@ -108,7 +112,7 @@ test_certificate_passwords() {
     local cert_dir="$PROJECT_ROOT/$P12_PATH"
 
     # Test app certificate password using OpenSSL
-    if openssl pkcs12 -in "$cert_dir/app_cert.p12" -passin "pass:$P12_PASSWORD" -noout -legacy 2>/dev/null; then
+    if openssl pkcs12 -in "$cert_dir/developerID_application.p12" -passin "pass:$P12_PASSWORD" -noout -legacy 2>/dev/null; then
         log_success "Application certificate password verified"
     else
         log_error "Application certificate password failed"
@@ -117,10 +121,19 @@ test_certificate_passwords() {
     fi
 
     # Test installer certificate password using OpenSSL
-    if openssl pkcs12 -in "$cert_dir/installer_cert.p12" -passin "pass:$P12_PASSWORD" -noout -legacy 2>/dev/null; then
+    if openssl pkcs12 -in "$cert_dir/developerID_installer.p12" -passin "pass:$P12_PASSWORD" -noout -legacy 2>/dev/null; then
         log_success "Installer certificate password verified"
     else
         log_error "Installer certificate password failed"
+        log_error "Check that the p12_password in app_config.json is correct"
+        exit 1
+    fi
+
+    # Test private key password using OpenSSL
+    if openssl pkcs12 -in "$cert_dir/private_key.p12" -passin "pass:$P12_PASSWORD" -noout -legacy 2>/dev/null; then
+        log_success "Private key password verified"
+    else
+        log_error "Private key password failed"
         log_error "Check that the p12_password in app_config.json is correct"
         exit 1
     fi
@@ -135,13 +148,13 @@ check_certificate_details() {
     local cert_dir="$PROJECT_ROOT/$P12_PATH"
 
     # Check application certificate using OpenSSL
-    if [ -f "$cert_dir/app_cert.p12" ]; then
-        local app_cert_subject=$(openssl pkcs12 -in "$cert_dir/app_cert.p12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | sed 's/.*CN[[:space:]]*=[[:space:]]*//' | sed 's/[[:space:]]*,.*//' || echo "")
+    if [ -f "$cert_dir/developerID_application.p12" ]; then
+        local app_cert_subject=$(openssl pkcs12 -in "$cert_dir/developerID_application.p12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | sed 's/.*CN[[:space:]]*=[[:space:]]*//' | sed 's/[[:space:]]*,.*//' || echo "")
         if [ -n "$app_cert_subject" ]; then
             log_success "Application Certificate: $app_cert_subject"
 
             # Check validity dates
-            local validity=$(openssl pkcs12 -in "$cert_dir/app_cert.p12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | openssl x509 -noout -dates 2>/dev/null || echo "")
+            local validity=$(openssl pkcs12 -in "$cert_dir/developerID_application.p12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | openssl x509 -noout -dates 2>/dev/null || echo "")
             if echo "$validity" | grep -q "notAfter"; then
                 local not_after=$(echo "$validity" | grep "notAfter" | sed 's/notAfter=//')
                 log_success "  Valid until: $not_after"
@@ -154,13 +167,13 @@ check_certificate_details() {
     fi
 
     # Check installer certificate using OpenSSL
-    if [ -f "$cert_dir/installer_cert.p12" ]; then
-        local installer_cert_subject=$(openssl pkcs12 -in "$cert_dir/installer_cert.p12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | sed 's/.*CN[[:space:]]*=[[:space:]]*//' | sed 's/[[:space:]]*,.*//' || echo "")
+    if [ -f "$cert_dir/developerID_installer.p12" ]; then
+        local installer_cert_subject=$(openssl pkcs12 -in "$cert_dir/developerID_installer.p12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | sed 's/.*CN[[:space:]]*=[[:space:]]*//' | sed 's/[[:space:]]*,.*//' || echo "")
         if [ -n "$installer_cert_subject" ]; then
             log_success "Installer Certificate: $installer_cert_subject"
 
             # Check validity dates
-            local validity=$(openssl pkcs12 -in "$cert_dir/installer_cert.p12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | openssl x509 -noout -dates 2>/dev/null || echo "")
+            local validity=$(openssl pkcs12 -in "$cert_dir/developerID_installer.p12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | openssl x509 -noout -dates 2>/dev/null || echo "")
             if echo "$validity" | grep -q "notAfter"; then
                 local not_after=$(echo "$validity" | grep "notAfter" | sed 's/notAfter=//')
                 log_success "  Valid until: $not_after"
@@ -260,16 +273,22 @@ EOF
     # Add certificate details
     local cert_dir="$PROJECT_ROOT/$P12_PATH"
 
-    if [ -f "$cert_dir/app_cert.p12" ]; then
-        echo "- ✅ Application Certificate (app_cert.p12)" >> "$report_file"
+    if [ -f "$cert_dir/developerID_application.p12" ]; then
+        echo "- ✅ Application Certificate (developerID_application.p12)" >> "$report_file"
     else
-        echo "- ❌ Application Certificate (app_cert.p12)" >> "$report_file"
+        echo "- ❌ Application Certificate (developerID_application.p12)" >> "$report_file"
     fi
 
-    if [ -f "$cert_dir/installer_cert.p12" ]; then
-        echo "- ✅ Installer Certificate (installer_cert.p12)" >> "$report_file"
+    if [ -f "$cert_dir/developerID_installer.p12" ]; then
+        echo "- ✅ Installer Certificate (developerID_installer.p12)" >> "$report_file"
     else
-        echo "- ❌ Installer Certificate (installer_cert.p12)" >> "$report_file"
+        echo "- ❌ Installer Certificate (developerID_installer.p12)" >> "$report_file"
+    fi
+
+    if [ -f "$cert_dir/private_key.p12" ]; then
+        echo "- ✅ Private Key (private_key.p12)" >> "$report_file"
+    else
+        echo "- ❌ Private Key (private_key.p12)" >> "$report_file"
     fi
 
     cat >> "$report_file" << EOF
@@ -324,9 +343,9 @@ If you need to re-export your certificates:
 
 1. Open Keychain Access
 2. Find your "Developer ID Application" certificate
-3. Right-click → Export → Save as app_cert.p12
+3. Right-click → Export → Save as developerID_application.p12
 4. Find your "Developer ID Installer" certificate  
-5. Right-click → Export → Save as installer_cert.p12
+5. Right-click → Export → Save as developerID_installer.p12
 6. Place both files in: $P12_PATH/
 7. Update the password in app_config.json if needed
 
@@ -351,9 +370,8 @@ main() {
         test_certificate_passwords
         check_certificate_details
 
-        # Test Apple credentials (non-fatal) - temporarily disabled due to timeout issues
-        log_warning "Apple credentials test skipped - notarization may not work"
-        log_info "To enable Apple credentials test, uncomment the test_apple_credentials call"
+        # Test Apple credentials (non-fatal)
+        test_apple_credentials
 
         # Create build environment
         create_build_environment

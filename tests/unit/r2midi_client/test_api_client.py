@@ -9,6 +9,8 @@ import pytest
 from r2midi_client.api_client import CachedApiClient as ApiClient
 from r2midi_client.models import Device, Preset
 
+pytestmark = pytest.mark.client
+
 
 class TestApiClient:
     """Test cases for the ApiClient class"""

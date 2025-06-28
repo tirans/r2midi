@@ -74,14 +74,14 @@ jobs:
             echo "Setting up virtual environments manually..."
             python3 -m venv venv_server
             python3 -m venv venv_client
-            
+
             # Install server dependencies
             source venv_server/bin/activate
             pip install --upgrade pip
             pip install briefcase
             pip install -r requirements.txt
             deactivate
-            
+
             # Install client dependencies  
             source venv_client/bin/activate
             pip install --upgrade pip
@@ -101,7 +101,7 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version || '1.0.0' }}"
           BUILD_TYPE="${{ github.event.inputs.build-type || 'production' }}"
-          
+
           # Build server (without PKG)
           if [ -f "./build-server-local.sh" ]; then
             ./build-server-local.sh --version "$VERSION" --no-pkg
@@ -112,7 +112,7 @@ jobs:
             briefcase package macos app -a server --no-sign
             deactivate
           fi
-          
+
           # Build client (without PKG)
           if [ -f "./build-client-local.sh" ]; then
             ./build-client-local.sh --version "$VERSION" --no-pkg
@@ -126,8 +126,8 @@ jobs:
 
       - name: Build and sign PKGs with macOS-Pkg-Builder
         env:
+          APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
           APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
-          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -135,14 +135,14 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version || '1.0.0' }}"
           BUILD_TYPE="${{ github.event.inputs.build-type || 'production' }}"
-          
+
           # Make scripts executable
           chmod +x scripts/build-pkg-with-macos-builder.sh
-          
+
           # Find the built applications
           SERVER_APP=""
           CLIENT_APP=""
-          
+
           # Look for server app in common locations
           if [ -d "build/server/macos/app/R2MIDI Server.app" ]; then
             SERVER_APP="build/server/macos/app/R2MIDI Server.app"
@@ -153,7 +153,7 @@ jobs:
             find . -name "*.app" -type d | head -10
             exit 1
           fi
-          
+
           # Look for client app in common locations  
           if [ -d "build/r2midi-client/macos/app/R2MIDI Client.app" ]; then
             CLIENT_APP="build/r2midi-client/macos/app/R2MIDI Client.app"
@@ -164,10 +164,10 @@ jobs:
             find . -name "*.app" -type d | head -10
             exit 1
           fi
-          
+
           echo "📱 Found server app: $SERVER_APP"
           echo "📱 Found client app: $CLIENT_APP"
-          
+
           # Build server PKG
           echo "🔨 Building server PKG..."
           ./scripts/build-pkg-with-macos-builder.sh \
@@ -175,7 +175,7 @@ jobs:
             --pkg-name "R2MIDI-Server-$VERSION" \
             --version "$VERSION" \
             --build-type "$BUILD_TYPE"
-          
+
           # Build client PKG
           echo "🔨 Building client PKG..."
           ./scripts/build-pkg-with-macos-builder.sh \
@@ -192,7 +192,7 @@ jobs:
               if [ -f "$pkg" ]; then
                 size=$(du -sh "$pkg" | cut -f1)
                 echo "  ✅ $(basename "$pkg") ($size)"
-                
+
                 # Check if signed
                 if pkgutil --check-signature "$pkg" >/dev/null 2>&1; then
                   echo "     🔒 Signed"

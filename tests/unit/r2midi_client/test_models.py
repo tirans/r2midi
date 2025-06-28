@@ -1,6 +1,9 @@
 import unittest
 
+import pytest
 from r2midi_client.models import Device, Preset, UIState
+
+pytestmark = pytest.mark.client
 
 
 class TestClientModels(unittest.TestCase):

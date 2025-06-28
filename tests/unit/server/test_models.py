@@ -1,6 +1,9 @@
 import unittest
 
+import pytest
 from server.models import Device, Preset, PresetRequest, UIState
+
+pytestmark = pytest.mark.server
 
 
 class TestModels(unittest.TestCase):

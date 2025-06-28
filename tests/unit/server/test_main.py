@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient as FastAPITestClient
 # Import the app and functions from server.main
 from server.main import app, find_available_port, is_port_in_use
 
+pytestmark = pytest.mark.server
+
 
 # Create a custom TestClient that's compatible with newer versions of httpx
 class TestClient(FastAPITestClient):

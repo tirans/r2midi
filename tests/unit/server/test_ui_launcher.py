@@ -5,7 +5,10 @@ import time
 import unittest
 from unittest.mock import MagicMock, call, patch
 
+import pytest
 from server.ui_launcher import UILauncher
+
+pytestmark = pytest.mark.server
 
 
 class TestUILauncher(unittest.TestCase):

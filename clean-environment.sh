@@ -4,12 +4,14 @@ set -euo pipefail
 
 DEEP_CLEAN=false
 KEEP_CACHE=false
+PRESERVE_PACKAGES=true  # New option to preserve signed .pkg files
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --deep) DEEP_CLEAN=true; shift ;;
         --keep-cache) KEEP_CACHE=true; shift ;;
-        *) echo "Usage: $0 [--deep] [--keep-cache]"; exit 1 ;;
+        --no-preserve-packages) PRESERVE_PACKAGES=false; shift ;;
+        *) echo "Usage: $0 [--deep] [--keep-cache] [--no-preserve-packages]"; exit 1 ;;
     esac
 done
 
@@ -63,7 +65,8 @@ robust_cleanup() {
     fi
 }
 
-# Clean build artifacts
+# Clean build artifacts (but preserve signed packages)
+echo "  🧹 Cleaning build artifacts while preserving signed packages..."
 safe_remove "build" "main build directory"
 safe_remove "dist" "main dist directory"
 safe_remove "build_native" "native build directory"
@@ -72,7 +75,41 @@ safe_remove "build_native" "native build directory"
 robust_cleanup "build_client" "client build directory"
 robust_cleanup "build_server" "server build directory"
 
-safe_remove "artifacts" "artifacts directory"
+# Preserve signed .pkg files but clean other artifacts
+if [ -d "artifacts" ]; then
+    if [ "$PRESERVE_PACKAGES" = "true" ]; then
+        echo "  📦 Preserving signed .pkg files in artifacts directory..."
+        # Create a temporary backup of .pkg files
+        TEMP_PKG_DIR="/tmp/r2midi_pkg_backup_$"
+        mkdir -p "$TEMP_PKG_DIR"
+        
+        # Move .pkg files to temporary location
+        find artifacts -name "*.pkg" -exec mv {} "$TEMP_PKG_DIR/" \; 2>/dev/null || true
+        
+        # Count preserved packages
+        PKG_COUNT=$(find "$TEMP_PKG_DIR" -name "*.pkg" 2>/dev/null | wc -l | tr -d ' ')
+        
+        # Remove artifacts directory
+        safe_remove "artifacts" "artifacts directory"
+        
+        # Recreate artifacts directory and restore .pkg files
+        mkdir -p "artifacts"
+        if [ "$PKG_COUNT" -gt 0 ]; then
+            mv "$TEMP_PKG_DIR"/*.pkg "artifacts/" 2>/dev/null || true
+            echo "    ✅ Preserved $PKG_COUNT signed .pkg file(s)"
+        else
+            echo "    ℹ️  No .pkg files found to preserve"
+        fi
+        
+        # Clean up temporary directory
+        rm -rf "$TEMP_PKG_DIR"
+    else
+        echo "  🗑️ Complete artifacts cleanup (including .pkg files)..."
+        safe_remove "artifacts" "artifacts directory"
+    fi
+else
+    echo "  ℹ️  No artifacts directory found"
+fi
 
 # Clean virtual environments
 safe_remove "venv" "main virtual environment"

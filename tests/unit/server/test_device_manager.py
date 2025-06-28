@@ -4,8 +4,11 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
+import pytest
 from server.device_manager import DeviceManager
 from server.models import Device, Preset
+
+pytestmark = pytest.mark.server
 
 
 class TestDeviceManager(unittest.TestCase):

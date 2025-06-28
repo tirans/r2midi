@@ -1,23 +1,26 @@
 #!/bin/bash
+set -euo pipefail
 
-# make-scripts-executable.sh - Make all build scripts executable
+# Execute the make scripts executable script
+echo "🔧 Making all build scripts executable..."
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
-
-echo "Making scripts executable..."
-
-# Make scripts executable
-chmod +x scripts/common-certificate-setup.sh
+# Main build scripts
+chmod +x build-all-local.sh
+chmod +x build-server-local.sh  
 chmod +x build-client-local.sh
-chmod +x build-server-local.sh
-chmod +x test-certificate-setup.sh
+chmod +x make-scripts-executable.sh
+chmod +x test-simplified-build.sh
+
+# GitHub Actions scripts
+chmod +x .github/scripts/sign-notarize.sh 2>/dev/null || true
+
+# Python scripts
+chmod +x scripts/build-pkg-with-macos-builder.py 2>/dev/null || true
+
+# Other utility scripts
+chmod +x scripts/keychain-free-build.sh 2>/dev/null || true
+chmod +x clean-environment.sh 2>/dev/null || true
+chmod +x setup-virtual-environments.sh 2>/dev/null || true
 
 echo "✅ All scripts are now executable"
-
-# List the scripts with their permissions
-echo ""
-echo "Script permissions:"
-ls -la scripts/common-certificate-setup.sh
-ls -la build-client-local.sh
-ls -la build-server-local.sh
-ls -la test-certificate-setup.sh
+echo "🚀 You can now run: ./test-simplified-build.sh"
