@@ -356,19 +356,35 @@ update_changelog "$NEW_VERSION" "$VERSION_TYPE"
 
 # Commit changes
 echo "📝 Committing version changes..."
-git add server/version.py pyproject.toml CHANGELOG.md
 
-if git diff --staged --quiet; then
-    echo "⚠️ No changes to commit"
-else
-    git commit -m "chore: bump version to $NEW_VERSION [skip ci]
+# Add files that exist
+FILES_TO_ADD=""
+if [ -f "server/version.py" ]; then
+    FILES_TO_ADD="$FILES_TO_ADD server/version.py"
+fi
+if [ -f "pyproject.toml" ]; then
+    FILES_TO_ADD="$FILES_TO_ADD pyproject.toml"
+fi
+if [ -f "CHANGELOG.md" ]; then
+    FILES_TO_ADD="$FILES_TO_ADD CHANGELOG.md"
+fi
+
+if [ -n "$FILES_TO_ADD" ]; then
+    git add $FILES_TO_ADD
+    
+    if git diff --staged --quiet; then
+        echo "⚠️ No changes to commit"
+    else
+        git commit -m "chore: bump version to $NEW_VERSION [skip ci]
 
 - Version increment: $VERSION_TYPE
 - Updated version in server/version.py
-- Updated version in pyproject.toml  
 - Updated CHANGELOG.md"
 
-    echo "✅ Committed version changes"
+        echo "✅ Committed version changes"
+    fi
+else
+    echo "⚠️ No version files found to commit"
 fi
 
 # Push changes with improved retry logic
