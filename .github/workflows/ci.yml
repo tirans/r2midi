@@ -97,10 +97,11 @@ jobs:
         run: |
           ./.github/scripts/install-system-dependencies.sh
 
-      - name: Install Python dependencies
+      - name: Setup virtual environments
         shell: bash
         run: |
-          ./.github/scripts/install-python-dependencies.sh ci
+          chmod +x ./.github/scripts/setup-ci-virtual-environments.sh
+          ./.github/scripts/setup-ci-virtual-environments.sh
 
       - name: Validate project structure
         shell: bash
@@ -113,12 +114,35 @@ jobs:
           # Set PYTHONPATH to include the project root
           export PYTHONPATH=$PWD:${PYTHONPATH:-}
 
-          # Run tests with coverage on Ubuntu (since we only use Python 3.12 now)
+          # Run server tests
+          echo "🧪 Running server tests..."
+          source build_venv_server/bin/activate
           if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
-            # Use virtual display for PyQt6 tests
-            xvfb-run -a python -m pytest -v --cov=server --cov=r2midi_client --cov-report=xml --cov-report=term
+            # Use virtual display for PyQt6 tests and generate coverage
+            xvfb-run -a python -m pytest -v tests/unit/server --cov=server --cov-report=xml:coverage-server.xml --cov-report=term
           else
-            python -m pytest -v
+            python -m pytest -v tests/unit/server
+          fi
+          deactivate
+
+          # Run client tests
+          echo "🧪 Running client tests..."
+          source build_venv_client/bin/activate
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            # Use virtual display for PyQt6 tests and generate coverage
+            xvfb-run -a python -m pytest -v tests/unit/r2midi_client --cov=r2midi_client --cov-report=xml:coverage-client.xml --cov-report=term
+          else
+            python -m pytest -v tests/unit/r2midi_client
+          fi
+          deactivate
+
+          # Combine coverage reports if on Ubuntu
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            echo "📊 Combining coverage reports..."
+            source build_venv_server/bin/activate
+            python -m coverage combine coverage-server.xml coverage-client.xml || true
+            python -m coverage xml || true
+            deactivate
           fi
 
       - name: Upload coverage to Codecov
