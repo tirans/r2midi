@@ -73,11 +73,144 @@ def extract_identity_from_cert(cert_file, cert_type):
         log_error(f"Error extracting {cert_type} identity: {e}")
         return None
 
+def setup_github_certificates(app_cert_b64, installer_cert_b64, cert_password, apple_id, apple_password, team_id, asc_key_id=None, asc_issuer_id=None, asc_api_key=None):
+    """Setup certificates from GitHub Actions environment variables"""
+    log_info("Setting up certificates from GitHub Actions environment")
+    
+    # Create temporary directory for certificates
+    cert_dir = Path("/tmp/github_certs")
+    cert_dir.mkdir(exist_ok=True)
+    
+    try:
+        # Decode and save certificates
+        app_cert_path = cert_dir / "app_cert.p12"
+        installer_cert_path = cert_dir / "installer_cert.p12"
+        
+        # Decode base64 certificates
+        with open(app_cert_path, "wb") as f:
+            f.write(base64.b64decode(app_cert_b64))
+        with open(installer_cert_path, "wb") as f:
+            f.write(base64.b64decode(installer_cert_b64))
+            
+        log_success("Decoded GitHub certificates")
+        
+        # Use login keychain for GitHub Actions
+        keychain_name = "login.keychain-db"
+        
+        # Install Apple certificate chain
+        install_apple_cert_chain()
+        
+        # Import certificates to keychain
+        log_info("Importing application certificate to login keychain...")
+        app_import_cmd = [
+            "security", "import", str(app_cert_path),
+            "-k", keychain_name,
+            "-P", cert_password,
+            "-T", "/usr/bin/codesign",
+            "-T", "/usr/bin/security"
+        ]
+        subprocess.run(app_import_cmd, check=True, capture_output=True)
+        log_success("Application certificate imported")
+        
+        log_info("Importing installer certificate to login keychain...")
+        installer_import_cmd = [
+            "security", "import", str(installer_cert_path),
+            "-k", keychain_name,
+            "-P", cert_password,
+            "-T", "/usr/bin/productsign",
+            "-T", "/usr/bin/security"
+        ]
+        subprocess.run(installer_import_cmd, check=True, capture_output=True)
+        log_success("Installer certificate imported")
+        
+        # Set keychain access permissions
+        subprocess.run(["security", "set-key-partition-list", "-S", "apple-tool:,apple:", "-s", "-k", cert_password, keychain_name], 
+                      capture_output=True)
+        
+        # Create config object for notarization
+        cert_config = {
+            "apple_id": apple_id,
+            "apple_password": apple_password,
+            "team_id": team_id
+        }
+        
+        # Add App Store Connect API credentials if available (preferred method)
+        if asc_key_id and asc_issuer_id and asc_api_key:
+            # Save API key to temporary file
+            api_key_path = cert_dir / "app_store_connect_api_key.p8"
+            with open(api_key_path, "w") as f:
+                f.write(asc_api_key)
+            
+            cert_config.update({
+                "app_store_connect_key_id": asc_key_id,
+                "app_store_connect_issuer_id": asc_issuer_id,
+                "app_store_connect_api_key_path": str(api_key_path)
+            })
+            log_info("App Store Connect API credentials configured for notarization")
+        
+        log_success("GitHub certificates setup complete")
+        return cert_config
+        
+    except Exception as e:
+        log_error(f"Failed to setup GitHub certificates: {e}")
+        return None
+    finally:
+        # Clean up certificate files
+        if cert_dir.exists():
+            shutil.rmtree(cert_dir, ignore_errors=True)
+
+def install_apple_cert_chain():
+    """Install Apple certificate chain needed for signing"""
+    log_info("Ensuring Apple certificate chain is properly installed...")
+    
+    # Download and install Apple Root CA G3 if needed
+    try:
+        apple_root_cmd = ["curl", "-s", "-o", "/tmp/AppleRootCA-G3.cer", 
+                         "https://www.apple.com/certificateauthority/AppleRootCA-G3.cer"]
+        subprocess.run(apple_root_cmd, check=False)
+        
+        dev_id_cmd = ["curl", "-s", "-o", "/tmp/DeveloperIDG2CA.cer",
+                     "https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer"]
+        subprocess.run(dev_id_cmd, check=False)
+        
+        # Install certificates
+        subprocess.run(["security", "add-trusted-cert", "-d", "-r", "trustRoot", 
+                       "-k", "/Library/Keychains/System.keychain", "/tmp/AppleRootCA-G3.cer"], 
+                      capture_output=True)
+        subprocess.run(["security", "add-trusted-cert", "-d", "-r", "trustAsRoot",
+                       "-k", "/Library/Keychains/System.keychain", "/tmp/DeveloperIDG2CA.cer"],
+                      capture_output=True)
+        
+        log_success("Apple certificate chain verified")
+    except Exception as e:
+        log_warning(f"Could not install Apple certificate chain: {e}")
+
 def setup_certificates():
-    """Setup certificates for signing using P12 files"""
+    """Setup certificates for signing using P12 files or GitHub Actions environment"""
     log_step("Setting up Certificates")
 
-    # Get config info
+    # Check for GitHub Actions environment variables first
+    github_app_cert = os.environ.get("APPLE_DEVELOPER_ID_APPLICATION_CERT")
+    github_installer_cert = os.environ.get("APPLE_DEVELOPER_ID_INSTALLER_CERT")
+    github_cert_password = os.environ.get("APPLE_CERT_PASSWORD")
+    github_apple_id = os.environ.get("APPLE_ID")
+    github_apple_password = os.environ.get("APPLE_ID_PASSWORD") 
+    github_team_id = os.environ.get("APPLE_TEAM_ID")
+    
+    # App Store Connect API credentials (preferred for GitHub Actions)
+    github_asc_key_id = os.environ.get("APP_STORE_CONNECT_KEY_ID")
+    github_asc_issuer_id = os.environ.get("APP_STORE_CONNECT_ISSUER_ID")
+    github_asc_api_key = os.environ.get("APP_STORE_CONNECT_API_KEY")
+    
+    if github_app_cert and github_installer_cert and github_cert_password:
+        log_info("Detected GitHub Actions environment, using environment variables")
+        return setup_github_certificates(
+            github_app_cert, github_installer_cert, github_cert_password,
+            github_apple_id, github_apple_password, github_team_id,
+            github_asc_key_id, github_asc_issuer_id, github_asc_api_key
+        )
+
+    # Fall back to local configuration file
     config_path = Path("apple_credentials/config/app_config.json")
     if not config_path.exists():
         log_warning("Configuration file not found, building unsigned")
@@ -113,6 +246,9 @@ def setup_certificates():
 
     # Use login keychain for signing - temporary keychains cause private key access issues
     keychain_name = "login.keychain-db"
+    
+    # Install Apple certificate chain
+    install_apple_cert_chain()
     
     try:
         # Import P12 certificates to login keychain with private keys accessible
@@ -285,15 +421,19 @@ def get_signing_identity(identity_type="installer", cert_config=None):
                 if line.strip():
                     log_info(f"  {line}")
             
-            # Look for application identity
+            # Look for application identity and extract the hash
             for line in result.stdout.split('\n'):
                 if "Developer ID Application" in line and '"' in line:
                     import re
-                    match = re.search(r'"([^"]*)"', line)
-                    if match:
-                        identity = match.group(1)
-                        log_success(f"Found application identity: {identity}")
-                        return identity
+                    # Extract the certificate hash (SHA-1) from the line
+                    hash_match = re.search(r'(\w{40})', line)
+                    name_match = re.search(r'"([^"]*)"', line)
+                    if hash_match and name_match:
+                        cert_hash = hash_match.group(1)
+                        identity_name = name_match.group(1)
+                        log_success(f"Found application identity: {identity_name}")
+                        log_info(f"Using certificate hash for signing: {cert_hash}")
+                        return cert_hash  # Return hash instead of name for reliable signing
             
             log_warning("No application identity found in keychain")
             return None
@@ -552,6 +692,11 @@ def create_component_directory(component, build_dir):
                     # Exclude packages with compiled extensions for notarization simplicity
                     problematic_packages = ['py2app', 'rtmidi', 'pydantic_core']
                     
+                    # For client, only exclude packages that cause notarization issues
+                    if component == "client":
+                        problematic_packages.extend(['PyQt6', 'pyqt6_sip', 'pyqt6-sip', 'psutil'])
+                        # Exclude psutil to avoid notarization issues with unsigned binaries
+                    
                     if (name in problematic_packages or 
                         any(pkg in src for pkg in problematic_packages)):
                         ignored.append(name)
@@ -645,6 +790,19 @@ RESOURCES_DIR="$APP_DIR/Resources"
 # Set up environment - include site-packages for dependencies  
 export PYTHONPATH="$RESOURCES_DIR/lib:$RESOURCES_DIR/lib/site-packages:$PYTHONPATH"
 
+# Check for PyQt6 availability and add system paths if needed
+python3 -c "import PyQt6" 2>/dev/null || {{
+    echo "Looking for system PyQt6..."
+    # Add common system Python paths for PyQt6
+    for pypath in /usr/local/lib/python*/site-packages /opt/homebrew/lib/python*/site-packages ~/.local/lib/python*/site-packages; do
+        if [ -d "$pypath/PyQt6" ]; then
+            export PYTHONPATH="$pypath:$PYTHONPATH"
+            echo "Found PyQt6 at: $pypath"
+            break
+        fi
+    done
+}}
+
 # Run the client
 cd "$RESOURCES_DIR/lib/r2midi_client"
 exec python3 main.py "$@"
@@ -701,33 +859,42 @@ def sign_all_binaries_in_app(app_bundle_path, cert_config):
             if 'py2app' in str(file_path):
                 continue
                 
+            # Skip PyQt6 binaries - they're pre-signed by Qt Company and cause certificate chain issues
+            if 'PyQt6' in str(file_path):
+                continue
+                
             # Check if file should be signed
             should_sign = False
             
-            # Sign .so files (shared libraries)
-            if file.endswith('.so'):
+            # Only sign actual Mach-O binaries and shared libraries
+            if file.endswith(('.so', '.dylib')):
                 should_sign = True
-            # Sign executable files (check file command output)
+            # For executables, be more strict about what we sign
             elif file_path.is_file() and os.access(file_path, os.X_OK):
                 try:
-                    # Use file command to check if it's a binary
+                    # Use file command to check if it's actually a Mach-O binary
                     result = subprocess.run(['file', str(file_path)], 
                                           capture_output=True, text=True)
-                    if ('Mach-O' in result.stdout or 
-                        'executable' in result.stdout.lower() or
-                        'dynamically linked' in result.stdout):
+                    if ('Mach-O' in result.stdout and 
+                        ('executable' in result.stdout.lower() or 
+                         'dynamically linked' in result.stdout)):
                         should_sign = True
+                        
+                    # Don't sign Python source files, shell scripts, or other text files
+                    if (file.endswith(('.py', '.sh', '.txt', '.md', '.json', '.xml', '.plist')) or
+                        'ASCII text' in result.stdout or
+                        'Python script' in result.stdout or
+                        'shell script' in result.stdout):
+                        should_sign = False
                 except:
                     pass
             
             if should_sign:
                 files_to_sign.append(file_path)
     
-    if not files_to_sign:
-        log_info("No binaries found to sign")
-        return True
-        
-    log_info(f"Found {len(files_to_sign)} binaries to sign")
+    # For notarization, we need to sign the app bundle even if no individual binaries are found
+    # This is especially important when the main executable is a shell script
+    log_info(f"Found {len(files_to_sign)} internal binaries to sign")
     
     # Sign each binary
     signed_count = 0
@@ -849,8 +1016,8 @@ def build_component_pkg(component, version, cert_config, args):
         log_error("macOS-Pkg-Builder not available. Install with: pip install macos-pkg-builder")
         return False, False, False
 
-    # Create build directory
-    build_dir = Path("build")
+    # Create build directory - use timestamped to avoid permission issues
+    build_dir = Path(f"build_v2_{int(time.time())}")
     build_dir.mkdir(exist_ok=True)
     
     # Create component directory structure
@@ -859,9 +1026,58 @@ def build_component_pkg(component, version, cert_config, args):
         log_error(f"Failed to create component directory for {component}")
         return False, False, False
     
-    # Skip binary signing for now due to certificate chain issues
-    # The PKG itself will be properly signed with the installer certificate
-    log_info("Skipping binary signing (PKG signing is sufficient for distribution)")
+    # Apply proper PyQt6-compatible signing approach for client
+    if cert_config and not args.no_sign and component == "client":
+        log_info("Applying PyQt6-compatible app bundle signing...")
+        
+        # Get application signing identity
+        app_signing_identity = get_signing_identity("application", cert_config)
+        if app_signing_identity:
+            try:
+                # Create entitlements file for hardened runtime
+                entitlements_path = build_dir / "entitlements.plist"
+                entitlements_content = '''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>'''
+                with open(entitlements_path, "w") as f:
+                    f.write(entitlements_content)
+                
+                # Sign the app bundle with hardened runtime (required for notarization)
+                # Following 2024 best practices: avoid --deep, use bottom-up approach
+                cmd = [
+                    "codesign",
+                    "--sign", app_signing_identity,
+                    "--timestamp",
+                    "--options", "runtime",
+                    "--entitlements", str(entitlements_path),
+                    "--force",  # Overwrite existing signatures
+                    "--verbose",
+                    str(component_dir)
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                
+                if result.returncode == 0:
+                    log_success(f"✅ App bundle signed with PyQt6-compatible approach")
+                else:
+                    log_warning(f"❌ App bundle signing failed: {result.stderr.strip()}")
+                    
+            except Exception as e:
+                log_warning(f"❌ Exception during app bundle signing: {e}")
+        else:
+            log_warning("No application signing identity found for app bundle signing")
+    else:
+        # Skip binary signing for server or when certificates unavailable
+        log_info("Skipping binary signing (PKG signing is sufficient for distribution)")
 
     # Set up component details
     if component == "server":
@@ -888,28 +1104,12 @@ def build_component_pkg(component, version, cert_config, args):
 
     # Install to /opt/r2midi (requires admin but then symlink to user Applications)
     install_base = "/opt/r2midi"
-    file_structure = {}
+    app_bundle_name = f"{app_name}.app"
     
-    # Map all files in component directory (app bundle) to installation location
-    for root, dirs, files in os.walk(component_dir):
-        for file in files:
-            src_path = Path(root) / file
-            rel_path = src_path.relative_to(component_dir.parent)  # Include the .app folder name
-            dest_path = f"{install_base}/{rel_path}"
-            file_structure[str(src_path.absolute())] = dest_path
+    log_info(f"Building PKG to install {app_bundle_name} to {install_base}")
 
-    log_info(f"Mapping {len(file_structure)} files for {component} installation to {install_base}")
-
-    pkg_config = {
-        "pkg_output": str(output_pkg),
-        "pkg_bundle_id": bundle_id,
-        "pkg_version": version,
-        "pkg_file_structure": file_structure
-    }
-
-    # Add signing if available
+    # Log signing information
     if signing_identity:
-        pkg_config["pkg_signing_identity"] = signing_identity
         log_info(f"Will sign PKG with: {signing_identity}")
 
     # Create postinstall script to create symlinks in user's Applications folder
@@ -918,9 +1118,9 @@ def build_component_pkg(component, version, cert_config, args):
     
     postinstall_script = scripts_dir / "postinstall"
     if component == "server":
-        app_name = "R2MIDI Server.app"
+        app_bundle_name = "R2MIDI Server.app"
     else:  # client
-        app_name = "R2MIDI Client.app"
+        app_bundle_name = "R2MIDI Client.app"
         
     postinstall_content = f'''#!/bin/bash
 # Post-installation script for R2MIDI {component}
@@ -936,9 +1136,34 @@ if [ ! -d "$USER_HOME/Applications" ]; then
     echo "Created $USER_HOME/Applications directory"
 fi
 
+# Install external dependencies for client component
+if [ "{component}" = "client" ]; then
+    echo "Installing system dependencies (PyQt6)..."
+    
+    # Try multiple installation methods
+    if command -v pip3 >/dev/null 2>&1; then
+        # Install dependencies to system or user location
+        pip3 install --break-system-packages PyQt6==6.9.1 pyqt6-sip==13.10.2 2>/dev/null || \\
+        pip3 install --user PyQt6==6.9.1 pyqt6-sip==13.10.2 || \\
+        echo "Warning: Could not install dependencies. User may need to install manually: pip3 install PyQt6"
+    else
+        echo "Warning: pip3 not found. Dependencies must be installed manually: pip3 install PyQt6"
+    fi
+fi
+
+# Fix permissions on the installed app (PKG installs as root)
+if [ -d "/opt/r2midi/{app_bundle_name}" ]; then
+    echo "Fixing permissions for /opt/r2midi/{app_bundle_name}"
+    # Make app readable and executable by all users
+    chmod -R a+rX "/opt/r2midi/{app_bundle_name}"
+    # Ensure executables are executable
+    find "/opt/r2midi/{app_bundle_name}" -name "*.py" -exec chmod a+r {{}} \\;
+    find "/opt/r2midi/{app_bundle_name}" -name "*.so" -exec chmod a+rx {{}} \\;
+fi
+
 # Create symlink to the installed app
-SOURCE_APP="/opt/r2midi/{app_name}"
-TARGET_APP="$USER_HOME/Applications/{app_name}"
+SOURCE_APP="/opt/r2midi/{app_bundle_name}"
+TARGET_APP="$USER_HOME/Applications/{app_bundle_name}"
 
 if [ -d "$SOURCE_APP" ]; then
     # Remove existing symlink or app if it exists
@@ -963,19 +1188,37 @@ exit 0
         f.write(postinstall_content)
     postinstall_script.chmod(0o755)
     
-    log_success(f"Created postinstall script to symlink {app_name} to ~/Applications")
+    log_success(f"Created postinstall script to symlink {app_bundle_name} to ~/Applications")
 
     try:
         # Use native pkgbuild directly to avoid macOS-Pkg-Builder limitations with large file structures
         log_info(f"Creating PKG using native pkgbuild: {output_pkg}")
         
         # Build pkgbuild command
+        # Create proper install structure: the app bundle should install to /opt/r2midi/
+        # So we need a proper directory structure
+        install_root_dir = build_dir / "install_root_v2"
+        install_root_dir.mkdir(exist_ok=True)
+        
+        # Create the target directory structure /opt/r2midi/
+        target_opt_dir = install_root_dir / "opt" / "r2midi"
+        target_opt_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Copy the app bundle to the target location  
+        target_app_path = target_opt_dir / component_dir.name
+        if target_app_path.exists():
+            shutil.rmtree(target_app_path)
+        shutil.copytree(component_dir, target_app_path)
+        
+        root_dir = install_root_dir
+        install_location = "/"
+        
         pkgbuild_cmd = [
             "/usr/bin/pkgbuild",
             "--identifier", bundle_id,
             "--version", version,
-            "--root", str(component_dir.absolute()),
-            "--install-location", install_base,
+            "--root", str(root_dir.absolute()),
+            "--install-location", install_location,
         ]
         
         # Add scripts for user Applications directory setup

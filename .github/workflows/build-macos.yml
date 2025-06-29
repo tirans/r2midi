@@ -42,6 +42,12 @@ on:
         required: true
       APPLE_TEAM_ID:
         required: true
+      APP_STORE_CONNECT_KEY_ID:
+        required: false
+      APP_STORE_CONNECT_ISSUER_ID:
+        required: false
+      APP_STORE_CONNECT_API_KEY:
+        required: false
 
 jobs:
   build-macos-simplified:
@@ -90,11 +96,11 @@ jobs:
           # Update pip and install core dependencies
           python -m pip install --upgrade pip wheel setuptools
           
-          # Install build dependencies
-          pip install py2app
-          
-          # Install macos-pkg-builder (this is key!)
+          # Install macos-pkg-builder for PKG creation
           pip install macos-pkg-builder
+          
+          # Install required dependencies for build environment setup
+          pip install virtualenv
           
           echo "✅ System dependencies installed"
 
@@ -122,7 +128,7 @@ jobs:
               exit(1)
           "
 
-      - name: Build with simplified system
+      - name: Build with new PKG system
         shell: bash
         env:
           APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
@@ -131,11 +137,14 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
         run: |
           VERSION="${{ inputs.version || '1.0.0-ci' }}"
           BUILD_TYPE="${{ inputs.build-type || 'production' }}"
           
-          echo "🚀 Starting simplified macOS build..."
+          echo "🚀 Starting R2MIDI macOS build with PKG system..."
           echo "Version: $VERSION"
           echo "Build Type: $BUILD_TYPE"
           
@@ -147,12 +156,15 @@ jobs:
           [ -n "$APPLE_ID" ] && echo "✅ APPLE_ID is set" || echo "❌ APPLE_ID is missing"
           [ -n "$APPLE_ID_PASSWORD" ] && echo "✅ APPLE_ID_PASSWORD is set" || echo "❌ APPLE_ID_PASSWORD is missing"
           [ -n "$APPLE_TEAM_ID" ] && echo "✅ APPLE_TEAM_ID is set" || echo "❌ APPLE_TEAM_ID is missing"
+          [ -n "$APP_STORE_CONNECT_KEY_ID" ] && echo "✅ APP_STORE_CONNECT_KEY_ID is set" || echo "ℹ️  APP_STORE_CONNECT_KEY_ID is not set (will use Apple ID auth)"
+          [ -n "$APP_STORE_CONNECT_ISSUER_ID" ] && echo "✅ APP_STORE_CONNECT_ISSUER_ID is set" || echo "ℹ️  APP_STORE_CONNECT_ISSUER_ID is not set"
+          [ -n "$APP_STORE_CONNECT_API_KEY" ] && echo "✅ APP_STORE_CONNECT_API_KEY is set" || echo "ℹ️  APP_STORE_CONNECT_API_KEY is not set"
           
-          # Run the simplified build system
+          # Run the new build system directly
           if [ "$BUILD_TYPE" = "dev" ]; then
-            ./build-all-local.sh --dev --version "$VERSION"
+            python3 build-pkg.py --component both --no-notarize --version "$VERSION"
           else
-            ./build-all-local.sh --version "$VERSION" --build-type "$BUILD_TYPE"
+            python3 build-pkg.py --component both --version "$VERSION"
           fi
 
       - name: Verify build artifacts
