@@ -1,0 +1,440 @@
+name: Build All Platforms
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  workflow_call:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: false
+        type: string
+        default: 'production'
+    secrets:
+      APPLE_DEVELOPER_ID_APPLICATION_CERT:
+        required: false
+      APPLE_DEVELOPER_ID_INSTALLER_CERT:
+        required: false
+      APPLE_CERT_PASSWORD:
+        required: false
+      APPLE_ID:
+        required: false
+      APPLE_ID_PASSWORD:
+        required: false
+      APPLE_TEAM_ID:
+        required: false
+      APP_STORE_CONNECT_KEY_ID:
+        required: false
+      APP_STORE_CONNECT_ISSUER_ID:
+        required: false
+      APP_STORE_CONNECT_API_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: false
+        type: choice
+        options: [dev, staging, production]
+        default: 'production'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  version-increment:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+
+      - name: Increment version
+        id: version
+        run: |
+          chmod +x .github/scripts/update-version.sh
+          ./.github/scripts/update-version.sh "patch"
+
+  test:
+    runs-on: ubuntu-latest
+    needs: [version-increment]
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/master' || success() || failure())
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-qt
+          # Install system dependencies for Linux testing
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+      - name: Run tests
+        run: |
+          export PYTHONPATH=$PWD:${PYTHONPATH:-}
+          xvfb-run -a python -m pytest tests/ -v --cov=server --cov=r2midi_client --cov-report=xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          flags: unittests
+
+  build-windows:
+    runs-on: windows-latest
+    needs: [test]
+    if: github.event_name == 'push'
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(python -c "exec(open('server/version.py').read()); print(__version__)")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Server
+        run: |
+          pyinstaller --onefile --name "R2MIDI-Server" --distpath "dist/server" server/main.py
+
+      - name: Build Client
+        run: |
+          pyinstaller --onefile --name "R2MIDI-Client" --distpath "dist/client" r2midi_client/main.py
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          VERSION="${{ steps.version.outputs.version }}"
+          
+          # Create Server package
+          mkdir -p "R2MIDI-Server-$VERSION-windows"
+          cp dist/server/R2MIDI-Server.exe "R2MIDI-Server-$VERSION-windows/"
+          cp README.md "R2MIDI-Server-$VERSION-windows/" || true
+          powershell Compress-Archive -Path "R2MIDI-Server-$VERSION-windows" -DestinationPath "artifacts/R2MIDI-Server-$VERSION-windows.zip"
+          
+          # Create Client package  
+          mkdir -p "R2MIDI-Client-$VERSION-windows"
+          cp dist/client/R2MIDI-Client.exe "R2MIDI-Client-$VERSION-windows/"
+          cp README.md "R2MIDI-Client-$VERSION-windows/" || true
+          powershell Compress-Archive -Path "R2MIDI-Client-$VERSION-windows" -DestinationPath "artifacts/R2MIDI-Client-$VERSION-windows.zip"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-builds
+          path: artifacts/
+          retention-days: 30
+
+  build-linux:
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.event_name == 'push'
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(python -c "exec(open('server/version.py').read()); print(__version__)")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Server
+        run: |
+          pyinstaller --onefile --name "r2midi-server" --distpath "dist/server" server/main.py
+
+      - name: Build Client
+        run: |
+          pyinstaller --onefile --name "r2midi-client" --distpath "dist/client" r2midi_client/main.py
+
+      - name: Package artifacts
+        run: |
+          mkdir -p artifacts
+          VERSION="${{ steps.version.outputs.version }}"
+          
+          # Create Server package
+          mkdir -p "r2midi-server-$VERSION-linux"
+          cp dist/server/r2midi-server "r2midi-server-$VERSION-linux/"
+          cp README.md "r2midi-server-$VERSION-linux/" || true
+          tar -czf "artifacts/R2MIDI-Server-$VERSION-linux.tar.gz" "r2midi-server-$VERSION-linux"
+          
+          # Create Client package
+          mkdir -p "r2midi-client-$VERSION-linux" 
+          cp dist/client/r2midi-client "r2midi-client-$VERSION-linux/"
+          cp README.md "r2midi-client-$VERSION-linux/" || true
+          tar -czf "artifacts/R2MIDI-Client-$VERSION-linux.tar.gz" "r2midi-client-$VERSION-linux"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-builds
+          path: artifacts/
+          retention-days: 30
+
+  build-macos:
+    runs-on: self-hosted
+    needs: [test, version-increment]
+    if: github.event_name == 'push'
+    timeout-minutes: 60
+    
+    steps:
+      - name: Pre-build cleanup
+        run: |
+          echo "🧹 Cleaning up self-hosted runner environment..."
+          # Clean up old keychains
+          if security list-keychains -d user | grep -q "r2midi-"; then
+            security list-keychains -d user | grep "r2midi-" | sed 's/"//g' | while read keychain; do
+              echo "Removing old keychain: $keychain"
+              security delete-keychain "$keychain" 2>/dev/null || true
+            done
+          fi
+          # Clean up certificate files
+          rm -rf /tmp/github_certs 2>/dev/null || true
+          # Clean up old build artifacts
+          rm -rf build_client build_server artifacts 2>/dev/null || true
+          echo "✅ Pre-build cleanup completed"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/master" ]; then
+            # Use incremented version from version-increment job
+            VERSION="${{ needs.version-increment.outputs.version }}"
+          else
+            # Extract from server/version.py for PRs
+            VERSION=$(python -c "exec(open('server/version.py').read()); print(__version__)")
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install macos-pkg-builder
+
+      - name: Build macOS PKGs
+        env:
+          APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
+          APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BUILD_TYPE="${{ inputs.build_type || github.event.inputs.build_type || 'production' }}"
+          
+          echo "🚀 Starting R2MIDI macOS build..."
+          echo "Version: $VERSION"
+          echo "Build Type: $BUILD_TYPE"
+          
+          if [ "$BUILD_TYPE" = "dev" ]; then
+            python3 build-pkg.py --component both --no-notarize --version "$VERSION"
+          else
+            python3 build-pkg.py --component both --version "$VERSION"
+          fi
+
+      - name: Verify build artifacts
+        run: |
+          echo "🔍 Verifying build artifacts..."
+          if [ -d "artifacts" ]; then
+            echo "📦 Found artifacts directory:"
+            ls -la artifacts/
+            
+            for pkg in artifacts/*.pkg; do
+              if [ -f "$pkg" ]; then
+                echo ""
+                echo "📋 Checking $(basename "$pkg"):"
+                size=$(du -sh "$pkg" | cut -f1)
+                echo "  📏 Size: $size"
+                
+                if pkgutil --check-signature "$pkg" >/dev/null 2>&1; then
+                  echo "  ✅ Package is signed"
+                else
+                  echo "  ⚠️  Package is unsigned"
+                fi
+                
+                if spctl --assess --type install "$pkg" >/dev/null 2>&1; then
+                  echo "  ✅ Package passes Gatekeeper"
+                else
+                  echo "  ⚠️  Package may not pass Gatekeeper"
+                fi
+              fi
+            done
+          else
+            echo "❌ No artifacts directory found"
+            exit 1
+          fi
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-builds
+          path: artifacts/
+          retention-days: 30
+
+      - name: Post-build cleanup
+        if: always()
+        run: |
+          echo "🧹 Performing post-build cleanup..."
+          # Clean up temporary keychains
+          if security list-keychains -d user | grep -q "r2midi-github"; then
+            security list-keychains -d user | grep "r2midi-github" | sed 's/"//g' | while read keychain; do
+              echo "Removing temporary keychain: $keychain"
+              security delete-keychain "$keychain" 2>/dev/null || true
+            done
+          fi
+          # Clean up certificate files
+          rm -rf /tmp/github_certs 2>/dev/null || true
+          echo "✅ Cleanup completed"
+
+  create-release:
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-linux, build-macos, version-increment]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all_builds
+
+      - name: Organize release artifacts
+        run: |
+          echo "📦 Organizing artifacts for release..."
+          mkdir -p release_artifacts
+          
+          # Copy all artifacts
+          find all_builds/ -type f \( -name "*.zip" -o -name "*.tar.gz" -o -name "*.pkg" \) -exec cp {} release_artifacts/ \;
+          
+          echo "📦 Release artifacts:"
+          ls -la release_artifacts/
+
+      - name: Get version
+        id: version
+        run: |
+          if [ -n "${{ needs.version-increment.outputs.version }}" ]; then
+            VERSION="${{ needs.version-increment.outputs.version }}"
+          else
+            VERSION=$(python -c "exec(open('server/version.py').read()); print(__version__)")
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: "R2MIDI v${{ steps.version.outputs.version }}"
+          draft: true
+          prerelease: false
+          files: release_artifacts/*
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            ## 🚀 R2MIDI v${{ steps.version.outputs.version }}
+            
+            ### 📦 Downloads
+            
+            **🍎 macOS (Recommended)**
+            - `R2MIDI-Server-${{ steps.version.outputs.version }}.pkg` - Signed & Notarized Server Package
+            - `R2MIDI-Client-${{ steps.version.outputs.version }}.pkg` - Signed & Notarized Client Package
+            
+            **🐧 Linux**
+            - `R2MIDI-Server-${{ steps.version.outputs.version }}-linux.tar.gz` - Server Portable Package
+            - `R2MIDI-Client-${{ steps.version.outputs.version }}-linux.tar.gz` - Client Portable Package
+            
+            **🪟 Windows**
+            - `R2MIDI-Server-${{ steps.version.outputs.version }}-windows.zip` - Server Portable Package
+            - `R2MIDI-Client-${{ steps.version.outputs.version }}-windows.zip` - Client Portable Package
+            
+            ### 📋 Installation
+            
+            **macOS:** Double-click the `.pkg` files to install. No security warnings!
+            
+            **Linux:** Extract `.tar.gz` files and run the executables.
+            
+            **Windows:** Extract `.zip` files and run the `.exe` files.
+            
+            ### 🔒 Security Status
+            
+            | Platform | Status |
+            |----------|--------|
+            | 🍎 macOS | ✅ Signed & Notarized |
+            | 🐧 Linux | ✅ Ready to use |
+            | 🪟 Windows | ⚠️ Unsigned (may show security warnings) |
