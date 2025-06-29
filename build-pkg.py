@@ -550,7 +550,7 @@ def create_component_directory(component, build_dir):
                 ignored = []
                 for name in names:
                     # Exclude packages with compiled extensions for notarization simplicity
-                    problematic_packages = ['py2app', 'rtmidi', 'pydantic_core', 'psutil', 'PyQt6']
+                    problematic_packages = ['py2app', 'rtmidi', 'pydantic_core']
                     
                     if (name in problematic_packages or 
                         any(pkg in src for pkg in problematic_packages)):
