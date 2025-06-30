@@ -83,6 +83,16 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Install system dependencies for python-rtmidi
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libasound2-dev \
+            libjack-jackd2-dev \
+            python3-dev
+
       - name: Create server virtual environment
         run: |
           python -m venv venv_server_test
