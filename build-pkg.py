@@ -146,14 +146,13 @@ def setup_github_certificates(app_cert_b64, installer_cert_b64, cert_password, a
             if not api_key_content.startswith("-----BEGIN"):
                 try:
                     # Try to decode as base64
-                    import base64
                     decoded_key = base64.b64decode(api_key_content).decode('utf-8')
                     if decoded_key.startswith("-----BEGIN"):
                         api_key_content = decoded_key
                     else:
                         log_warning("API key doesn't appear to be in proper PEM format")
-                except Exception:
-                    log_warning("Could not decode API key as base64, using as-is")
+                except Exception as e:
+                    log_warning(f"Could not decode API key as base64, using as-is: {e}")
             
             with open(api_key_path, "w") as f:
                 f.write(api_key_content)
