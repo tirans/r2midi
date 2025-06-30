@@ -123,8 +123,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             xvfb \
-            libegl1-mesa \
-            libgl1-mesa-glx \
+            libegl1-mesa-dev \
+            libgl1-mesa-dev \
+            libglib2.0-0 \
             libxkbcommon-x11-0 \
             libxcb-icccm4 \
             libxcb-image0 \
@@ -134,7 +135,11 @@ jobs:
             libxcb-xinerama0 \
             libxcb-xfixes0 \
             libxcb-shape0 \
-            x11-utils
+            x11-utils \
+            libasound2-dev \
+            libjack-jackd2-dev \
+            build-essential \
+            pkg-config
 
       - name: Create client virtual environment
         run: |
@@ -277,7 +282,12 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libasound2-dev \
+            libjack-jackd2-dev \
+            python3-dev
 
       - name: Create server virtual environment and build
         run: |

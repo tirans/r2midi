@@ -398,7 +398,27 @@ fi
 
 # Create and push Git tag with retry logic
 echo "🏷️ Creating Git tag..."
-git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION
+
+# Check if tag already exists
+if git tag -l | grep -q "^v$NEW_VERSION$"; then
+    echo "⚠️ Tag v$NEW_VERSION already exists, skipping tag creation"
+    echo "🔍 Checking if tag is pushed to remote..."
+    
+    # Check if tag exists on remote
+    if git ls-remote --tags origin | grep -q "refs/tags/v$NEW_VERSION$"; then
+        echo "✅ Tag v$NEW_VERSION already exists on remote"
+    else
+        echo "📤 Tag exists locally but not on remote, pushing existing tag..."
+        if git push origin "v$NEW_VERSION"; then
+            echo "✅ Successfully pushed existing tag: v$NEW_VERSION"
+        else
+            echo "⚠️ Failed to push existing tag (continuing anyway)"
+        fi
+    fi
+else
+    # Create new tag
+    echo "📝 Creating new tag v$NEW_VERSION..."
+    git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION
 
 Version: $NEW_VERSION
 Type: $VERSION_TYPE release
@@ -408,23 +428,24 @@ Changes:
 - Version increment: $VERSION_TYPE
 - See CHANGELOG.md for details"
 
-echo "📤 Pushing tag..."
-PUSH_RETRIES=3
-for i in $(seq 1 $PUSH_RETRIES); do
-    if git push origin "v$NEW_VERSION"; then
-        echo "✅ Successfully pushed tag: v$NEW_VERSION"
-        break
-    else
-        echo "⚠️ Tag push attempt $i failed"
-        if [ $i -lt $PUSH_RETRIES ]; then
-            echo "🔄 Retrying tag push..."
-            sleep $((2 * i))
-        else
-            echo "⚠️ Failed to push tag after $PUSH_RETRIES attempts (continuing anyway)"
+    echo "📤 Pushing tag..."
+    PUSH_RETRIES=3
+    for i in $(seq 1 $PUSH_RETRIES); do
+        if git push origin "v$NEW_VERSION"; then
+            echo "✅ Successfully pushed tag: v$NEW_VERSION"
             break
+        else
+            echo "⚠️ Tag push attempt $i failed"
+            if [ $i -lt $PUSH_RETRIES ]; then
+                echo "🔄 Retrying tag push..."
+                sleep $((2 * i))
+            else
+                echo "⚠️ Failed to push tag after $PUSH_RETRIES attempts (continuing anyway)"
+                break
+            fi
         fi
-    fi
-done
+    done
+fi
 
 # Set GitHub Actions outputs
 echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
