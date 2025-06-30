@@ -369,26 +369,34 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Python (use system Python on self-hosted)
+      - name: Setup Python
         run: |
-          # Use system Python3 on self-hosted macOS runner
           echo "Using system Python3:"
           python3 --version
           which python3
-          
-          # Ensure pip is available and up to date
-          python3 -m ensurepip --upgrade 2>/dev/null || true
-          python3 -m pip install --upgrade pip --user
 
       - name: Use centralized version
         run: |
           VERSION="${{ needs.extract-version.outputs.version }}"
           echo "Building version: $VERSION"
 
-      - name: Install dependencies
+      - name: Setup build virtual environments
         run: |
-          python3 -m pip install --upgrade pip --user
-          python3 -m pip install macos-pkg-builder --user
+          # Make scripts executable
+          chmod +x .github/scripts/setup-ci-virtual-environments.sh
+          
+          # Use the same virtual environment setup as build-all-local.sh expects
+          ./.github/scripts/setup-ci-virtual-environments.sh
+
+      - name: Install macOS-Pkg-Builder in build environment
+        run: |
+          # Install macOS-Pkg-Builder using the same approach as build-all-local.sh
+          if ! python3 -c "import macos_pkg_builder" 2>/dev/null; then
+            echo "Installing macOS-Pkg-Builder..."
+            python3 -m pip install macos-pkg-builder --break-system-packages
+          else
+            echo "✅ macOS-Pkg-Builder is already available"
+          fi
 
       - name: Build macOS PKGs
         env:
@@ -408,9 +416,6 @@ jobs:
           echo "🚀 Starting R2MIDI macOS build..."
           echo "Version: $VERSION"
           echo "Build Type: $BUILD_TYPE"
-          
-          # Ensure user bin directory is in PATH for installed packages
-          export PATH="$HOME/.local/bin:$PATH"
           
           if [ "$BUILD_TYPE" = "dev" ]; then
             python3 build-pkg.py --component both --no-notarize --version "$VERSION"
