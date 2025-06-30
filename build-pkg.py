@@ -154,10 +154,7 @@ def setup_github_certificates(app_cert_b64, installer_cert_b64, cert_password, a
     except Exception as e:
         log_error(f"Failed to setup GitHub certificates: {e}")
         return None
-    finally:
-        # Clean up certificate files
-        if cert_dir.exists():
-            shutil.rmtree(cert_dir, ignore_errors=True)
+    # Note: Certificate cleanup moved to main() finally block to preserve files for notarization
 
 def install_apple_cert_chain():
     """Install Apple certificate chain needed for signing"""
@@ -201,11 +198,6 @@ def setup_certificates():
     github_asc_key_id = os.environ.get("APP_STORE_CONNECT_KEY_ID")
     github_asc_issuer_id = os.environ.get("APP_STORE_CONNECT_ISSUER_ID")
     github_asc_api_key = os.environ.get("APP_STORE_CONNECT_API_KEY")
-
-    # Debug: Check App Store Connect credentials
-    log_info(f"App Store Connect Key ID: {'SET' if github_asc_key_id else 'NOT SET'}")
-    log_info(f"App Store Connect Issuer ID: {'SET' if github_asc_issuer_id else 'NOT SET'}")
-    log_info(f"App Store Connect API Key: {'SET' if github_asc_api_key else 'NOT SET'}")
 
     if github_app_cert and github_installer_cert and github_cert_password:
         log_info("Detected GitHub Actions environment, using environment variables")
@@ -634,7 +626,11 @@ def download_notarization_logs(submission_id, cert_config):
 
 def cleanup_certificates(cert_config):
     """Cleanup any temporary resources"""
-    # No cleanup needed when using login keychain
+    # Clean up temporary certificate files for GitHub Actions
+    cert_dir = Path("/tmp/github_certs")
+    if cert_dir.exists():
+        shutil.rmtree(cert_dir, ignore_errors=True)
+    
     if cert_config:
         log_info("Certificate cleanup complete")
 
