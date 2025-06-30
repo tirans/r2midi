@@ -37,8 +37,8 @@ setup_venv() {
     [ -f "$requirements_file" ] && python -m pip install -r "$requirements_file"
     [ -n "$extra_packages" ] && python -m pip install $extra_packages
 
-    # Install test dependencies in both environments
-    python -m pip install pytest pytest-cov pytest-xvfb pytest-qt
+    # Note: Test dependencies are NOT installed in build environments
+    # to avoid unsigned binaries in distribution packages
 
     deactivate
     echo "✅ $name environment completed"

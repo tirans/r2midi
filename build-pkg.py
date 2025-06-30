@@ -706,15 +706,8 @@ def create_component_directory(component, build_dir):
             def ignore_problematic_packages(src, names):
                 ignored = []
                 for name in names:
-                    # Exclude all packages with unsigned compiled extensions/binaries to ensure notarization success
-                    problematic_packages = [
-                        'py2app', 'rtmidi', 'pydantic_core', 'coverage', 
-                        'pytest', 'pytest-cov', 'pytest-asyncio', 'pytest-qt',
-                        # Additional packages that commonly contain unsigned binaries
-                        'numpy', 'scipy', 'pandas', 'pillow', 'lxml', 'cryptography',
-                        'cffi', 'markupsafe', 'pyyaml', 'greenlet', 'multidict',
-                        'yarl', 'aiohttp', 'charset-normalizer', 'idna'
-                    ]
+                    # Exclude packages with compiled extensions for notarization simplicity
+                    problematic_packages = ['py2app', 'rtmidi', 'pydantic_core']
 
                     # For client, only exclude packages that cause notarization issues
                     if component == "client":
@@ -725,10 +718,6 @@ def create_component_directory(component, build_dir):
                         any(pkg in src for pkg in problematic_packages)):
                         ignored.append(name)
                         log_info(f"Excluding problematic package: {name}")
-                    elif (name.endswith('.so') or name.endswith('.dylib') or 
-                          name.endswith('.pyd') or '.cpython-' in name):
-                        ignored.append(name)
-                        log_info(f"Excluding unsigned binary: {name}")
                     elif name.endswith('.pyc') or name == '__pycache__':
                         ignored.append(name)
                 return ignored
