@@ -202,6 +202,11 @@ def setup_certificates():
     github_asc_issuer_id = os.environ.get("APP_STORE_CONNECT_ISSUER_ID")
     github_asc_api_key = os.environ.get("APP_STORE_CONNECT_API_KEY")
 
+    # Debug: Check App Store Connect credentials
+    log_info(f"App Store Connect Key ID: {'SET' if github_asc_key_id else 'NOT SET'}")
+    log_info(f"App Store Connect Issuer ID: {'SET' if github_asc_issuer_id else 'NOT SET'}")
+    log_info(f"App Store Connect API Key: {'SET' if github_asc_api_key else 'NOT SET'}")
+
     if github_app_cert and github_installer_cert and github_cert_password:
         log_info("Detected GitHub Actions environment, using environment variables")
         return setup_github_certificates(

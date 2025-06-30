@@ -420,9 +420,7 @@ jobs:
           if [ "$BUILD_TYPE" = "dev" ]; then
             python3 build-pkg.py --component both --no-notarize --version "$VERSION"
           else
-            # For GitHub Actions, skip notarization for now due to App Store Connect API key setup issues
-            # PKGs will still be signed and functional
-            python3 build-pkg.py --component both --no-notarize --version "$VERSION"
+            python3 build-pkg.py --component both --version "$VERSION"
           fi
 
       - name: Verify build artifacts
