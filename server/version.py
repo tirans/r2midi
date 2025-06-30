@@ -4,4 +4,4 @@ This file contains the current version of the application.
 The version is automatically incremented on each git commit to master.
 """
 
-__version__ = "0.1.228"
+__version__ = "0.1.229"
