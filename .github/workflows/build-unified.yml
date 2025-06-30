@@ -369,10 +369,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
+      - name: Setup Python (use system Python on self-hosted)
+        run: |
+          # Use system Python3 on self-hosted macOS runner
+          echo "Using system Python3:"
+          python3 --version
+          which python3
+          
+          # Ensure pip is available and up to date
+          python3 -m ensurepip --upgrade 2>/dev/null || true
+          python3 -m pip install --upgrade pip --user
 
       - name: Use centralized version
         run: |
@@ -381,8 +387,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install macos-pkg-builder
+          python3 -m pip install --upgrade pip --user
+          python3 -m pip install macos-pkg-builder --user
 
       - name: Build macOS PKGs
         env:
@@ -402,6 +408,9 @@ jobs:
           echo "🚀 Starting R2MIDI macOS build..."
           echo "Version: $VERSION"
           echo "Build Type: $BUILD_TYPE"
+          
+          # Ensure user bin directory is in PATH for installed packages
+          export PATH="$HOME/.local/bin:$PATH"
           
           if [ "$BUILD_TYPE" = "dev" ]; then
             python3 build-pkg.py --component both --no-notarize --version "$VERSION"
