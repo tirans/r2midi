@@ -1,0 +1,27 @@
+#!/bin/bash
+# R2MIDI Client Launcher Script
+
+# Get the directory of this script (inside the app bundle)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$(dirname "$SCRIPT_DIR")"
+RESOURCES_DIR="$APP_DIR/Resources"
+
+# Set up environment - include site-packages for dependencies  
+export PYTHONPATH="$RESOURCES_DIR/lib:$RESOURCES_DIR/lib/site-packages:$PYTHONPATH"
+
+# Check for PyQt6 availability and add system paths if needed
+python3 -c "import PyQt6" 2>/dev/null || {
+    echo "Looking for system PyQt6..."
+    # Add common system Python paths for PyQt6
+    for pypath in /usr/local/lib/python*/site-packages /opt/homebrew/lib/python*/site-packages ~/.local/lib/python*/site-packages; do
+        if [ -d "$pypath/PyQt6" ]; then
+            export PYTHONPATH="$pypath:$PYTHONPATH"
+            echo "Found PyQt6 at: $pypath"
+            break
+        fi
+    done
+}
+
+# Run the client with proper working directory
+cd "$RESOURCES_DIR/lib"
+exec python3 -m r2midi_client.main "$@"

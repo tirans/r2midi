@@ -1,0 +1,17 @@
+#!/bin/bash
+# R2MIDI Server Launcher Script
+
+# Get the directory of this script (inside the app bundle)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$(dirname "$SCRIPT_DIR")"
+RESOURCES_DIR="$APP_DIR/Resources"
+
+# Set up environment - include site-packages for dependencies
+export PYTHONPATH="$RESOURCES_DIR/lib:$RESOURCES_DIR/lib/site-packages:$PYTHONPATH"
+
+# Create logs directory if it doesn't exist
+mkdir -p "$RESOURCES_DIR/lib/server/logs"
+
+# Run the server with proper working directory
+cd "$RESOURCES_DIR/lib"
+exec python3 -m server.main "$@"

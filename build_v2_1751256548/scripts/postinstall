@@ -1,0 +1,60 @@
+#!/bin/bash
+# Post-installation script for R2MIDI server
+
+# Get the user who invoked the installer (even if run with sudo)
+REAL_USER="${SUDO_USER:-$USER}"
+USER_HOME=$(eval echo "~$REAL_USER")
+
+# Create ~/Applications directory if it doesn't exist
+if [ ! -d "$USER_HOME/Applications" ]; then
+    mkdir -p "$USER_HOME/Applications"
+    chown "$REAL_USER" "$USER_HOME/Applications"
+    echo "Created $USER_HOME/Applications directory"
+fi
+
+# Install external dependencies for client component
+if [ "server" = "client" ]; then
+    echo "Installing system dependencies (PyQt6)..."
+
+    # Try multiple installation methods
+    if command -v pip3 >/dev/null 2>&1; then
+        # Install dependencies to system or user location
+        pip3 install --break-system-packages PyQt6==6.9.1 pyqt6-sip==13.10.2 2>/dev/null || \
+        pip3 install --user PyQt6==6.9.1 pyqt6-sip==13.10.2 || \
+        echo "Warning: Could not install dependencies. User may need to install manually: pip3 install PyQt6"
+    else
+        echo "Warning: pip3 not found. Dependencies must be installed manually: pip3 install PyQt6"
+    fi
+fi
+
+# Fix permissions on the installed app (PKG installs as root)
+if [ -d "/opt/r2midi/R2MIDI Server.app" ]; then
+    echo "Fixing permissions for /opt/r2midi/R2MIDI Server.app"
+    # Make app readable and executable by all users
+    chmod -R a+rX "/opt/r2midi/R2MIDI Server.app"
+    # Ensure executables are executable
+    find "/opt/r2midi/R2MIDI Server.app" -name "*.py" -exec chmod a+r {} \;
+    find "/opt/r2midi/R2MIDI Server.app" -name "*.so" -exec chmod a+rx {} \;
+fi
+
+# Create symlink to the installed app
+SOURCE_APP="/opt/r2midi/R2MIDI Server.app"
+TARGET_APP="$USER_HOME/Applications/R2MIDI Server.app"
+
+if [ -d "$SOURCE_APP" ]; then
+    # Remove existing symlink or app if it exists
+    rm -rf "$TARGET_APP"
+
+    # Create symlink
+    ln -sf "$SOURCE_APP" "$TARGET_APP"
+
+    # Fix ownership of the symlink
+    chown -h "$REAL_USER" "$TARGET_APP"
+
+    echo "Created symlink: $TARGET_APP -> $SOURCE_APP"
+    echo "The app is now available in ~/Applications and Launchpad"
+else
+    echo "Warning: Source app not found at $SOURCE_APP"
+fi
+
+exit 0

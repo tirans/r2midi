@@ -136,10 +136,27 @@ def setup_github_certificates(app_cert_b64, installer_cert_b64, cert_password, a
 
         # Add App Store Connect API credentials if available (preferred method)
         if asc_key_id and asc_issuer_id and asc_api_key:
-            # Save API key to temporary file
+            # Save API key to temporary file with proper formatting
             api_key_path = cert_dir / "app_store_connect_api_key.p8"
+            
+            # Ensure proper PEM format for the API key
+            api_key_content = asc_api_key.strip()
+            
+            # If the key doesn't have PEM headers, it might be base64 encoded
+            if not api_key_content.startswith("-----BEGIN"):
+                try:
+                    # Try to decode as base64
+                    import base64
+                    decoded_key = base64.b64decode(api_key_content).decode('utf-8')
+                    if decoded_key.startswith("-----BEGIN"):
+                        api_key_content = decoded_key
+                    else:
+                        log_warning("API key doesn't appear to be in proper PEM format")
+                except Exception:
+                    log_warning("Could not decode API key as base64, using as-is")
+            
             with open(api_key_path, "w") as f:
-                f.write(asc_api_key)
+                f.write(api_key_content)
 
             cert_config.update({
                 "app_store_connect_key_id": asc_key_id,
