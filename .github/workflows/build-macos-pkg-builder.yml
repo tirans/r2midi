@@ -44,7 +44,7 @@ jobs:
           ./scripts/check-runner-environment.sh
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         if: ${{ !contains(github.event.inputs.runner-type, 'self-hosted') }}
         with:
           python-version: '3.13'
