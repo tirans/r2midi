@@ -2,7 +2,7 @@ fastapi==0.115.12
 httpx==0.28.1
 PyQt6==6.9.1
 PyQt6_sip==13.10.2
-pytest==8.4.0
+pytest==9.0.3
 pytest-asyncio
 pytest-mock
 pytest-cov
