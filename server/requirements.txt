@@ -4,6 +4,6 @@ pytest==8.4.1
 python-dotenv==1.1.1
 python-rtmidi>=1.5.5
 setuptools==80.9.0
-uvicorn==0.35.0
+uvicorn==0.52.4
 gitpython==3.1.44
 httpx==0.28.1
